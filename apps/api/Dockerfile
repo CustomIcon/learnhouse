@@ -21,8 +21,11 @@ RUN pip install --upgrade pip \
 # Install project dependencies.
 RUN poetry install --no-interaction --no-ansi
 
-# 
+# Remove config.yaml and using ENV variables
+RUN rm -rf config/config.yaml
+
+# copy everything to /usr/learnhouse
 COPY ./ /usr/learnhouse
 
-# 
+# run backend
 CMD ["python" , "app.py"]

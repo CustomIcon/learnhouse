@@ -87,13 +87,12 @@ class LearnHouseConfig(BaseModel):
 def get_learnhouse_config() -> LearnHouseConfig:
 
     load_dotenv()
-
     # Get the YAML file
     yaml_path = os.path.join(os.path.dirname(__file__), "config.yaml")
-
-    # Load the YAML file
-    with open(yaml_path, "r") as f:
-        yaml_config = yaml.safe_load(f)
+    if os.path.exists(yaml_path):
+        # Load the YAML file
+        with open(yaml_path, "r") as f:
+            yaml_config = yaml.safe_load(f)
 
     # General Config
 
