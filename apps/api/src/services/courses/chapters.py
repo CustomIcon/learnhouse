@@ -1,13 +1,8 @@
 from datetime import datetime
-from typing import List, Literal
+from typing import List
 from uuid import uuid4
 from sqlmodel import Session, select
-from src.db.users import AnonymousUser
-from src.security.rbac.rbac import (
-    authorization_verify_based_on_roles_and_authorship_and_usergroups,
-    authorization_verify_if_element_is_public,
-    authorization_verify_if_user_is_anon,
-)
+from src.db.users import AnonymousUser, PublicUser
 from src.db.courses.course_chapters import CourseChapter
 from src.db.courses.activities import Activity, ActivityRead
 from src.db.courses.chapter_activities import ChapterActivity
@@ -18,9 +13,9 @@ from src.db.courses.chapters import (
     ChapterUpdate,
     ChapterUpdateOrder,
 )
-from src.services.courses.courses import Course
-from src.services.users.users import PublicUser
+from src.db.courses.courses import Course
 from fastapi import HTTPException, status, Request
+from src.security.rbac import check_resource_access, AccessAction
 
 
 ####################################################
@@ -42,7 +37,7 @@ async def create_chapter(
     course = db_session.exec(statement).one()
 
     # RBAC check
-    await rbac_check(request, "chapter_x", current_user, "create", db_session)
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.CREATE)
 
     # complete chapter object
     chapter.course_id = chapter_object.course_id
@@ -55,7 +50,7 @@ async def create_chapter(
     statement = (
         select(CourseChapter)
         .where(CourseChapter.course_id == chapter.course_id)
-        .order_by(CourseChapter.order)
+        .order_by(CourseChapter.order) # type: ignore
     )
     course_chapters = db_session.exec(statement).all()
 
@@ -122,14 +117,14 @@ async def get_chapter(
         )
 
     # RBAC check
-    await rbac_check(request, course.course_uuid, current_user, "read", db_session)
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
 
     # Get activities for this chapter
     statement = (
         select(Activity)
-        .join(ChapterActivity, Activity.id == ChapterActivity.activity_id)
+        .join(ChapterActivity, Activity.id == ChapterActivity.activity_id) # type: ignore
         .where(ChapterActivity.chapter_id == chapter_id)
-        .distinct(Activity.id)
+        .distinct(Activity.id) # type: ignore
     )
 
     activities = db_session.exec(statement).all()
@@ -158,7 +153,7 @@ async def update_chapter(
         )
 
     # RBAC check
-    await rbac_check(request, chapter.chapter_uuid, current_user, "update", db_session)
+    await check_resource_access(request, db_session, current_user, chapter.chapter_uuid, AccessAction.UPDATE)
 
     # Update only the fields that were passed in
     for var, value in vars(chapter_object).items():
@@ -193,7 +188,7 @@ async def delete_chapter(
         )
 
     # RBAC check
-    await rbac_check(request, chapter.chapter_uuid, current_user, "delete", db_session)
+    await check_resource_access(request, db_session, current_user, chapter.chapter_uuid, AccessAction.DELETE)
 
     # Remove all linked chapter activities
     statement = select(ChapterActivity).where(ChapterActivity.chapter_id == chapter.id)
@@ -214,6 +209,7 @@ async def get_course_chapters(
     course_id: int,
     db_session: Session,
     current_user: PublicUser | AnonymousUser,
+    with_unpublished_activities: bool,
     page: int = 1,
     limit: int = 10,
 ) -> List[ChapterRead]:
@@ -223,39 +219,46 @@ async def get_course_chapters(
 
     statement = (
         select(Chapter)
-        .join(CourseChapter, Chapter.id == CourseChapter.chapter_id)
+        .join(CourseChapter, Chapter.id == CourseChapter.chapter_id) # type: ignore
         .where(CourseChapter.course_id == course_id)
         .where(Chapter.course_id == course_id)
-        .order_by(CourseChapter.order)
-        .group_by(Chapter.id, CourseChapter.order)
+        .order_by(CourseChapter.order) # type: ignore
+        .group_by(Chapter.id, CourseChapter.order) # type: ignore
     )
     chapters = db_session.exec(statement).all()
 
     chapters = [ChapterRead(**chapter.model_dump(), activities=[]) for chapter in chapters]
 
     # RBAC check
-    await rbac_check(request, course.course_uuid, current_user, "read", db_session)  # type: ignore
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)  # type: ignore
 
-    # Get activities for each chapter
-    for chapter in chapters:
-        statement = (
-            select(ChapterActivity)
-            .where(ChapterActivity.chapter_id == chapter.id)
-            .order_by(ChapterActivity.order)
-            .distinct(ChapterActivity.id, ChapterActivity.order)
+    # Get all activities for all chapters in a single query
+    chapter_ids = [chapter.id for chapter in chapters]
+    if chapter_ids:
+        activity_statement = (
+            select(ChapterActivity, Activity)
+            .join(Activity, Activity.id == ChapterActivity.activity_id)  # type: ignore
+            .where(ChapterActivity.chapter_id.in_(chapter_ids))  # type: ignore
+            .order_by(ChapterActivity.chapter_id, ChapterActivity.order)  # type: ignore
         )
-        chapter_activities = db_session.exec(statement).all()
+        if not with_unpublished_activities:
+            activity_statement = activity_statement.where(Activity.published == True)
 
-        for chapter_activity in chapter_activities:
-            statement = (
-                select(Activity)
-                .where(Activity.id == chapter_activity.activity_id)
-                .distinct(Activity.id)
-            )
-            activity = db_session.exec(statement).first()
+        activity_results = db_session.exec(activity_statement).all()
 
-            if activity:
-                chapter.activities.append(ActivityRead(**activity.model_dump()))
+        # Group activities by chapter_id
+        chapter_activities_map: dict[int, list[ActivityRead]] = {}
+        seen: set[tuple[int, int]] = set()
+        for chapter_activity, activity in activity_results:
+            key = (chapter_activity.chapter_id, activity.id)
+            if key not in seen:
+                seen.add(key)
+                chapter_activities_map.setdefault(chapter_activity.chapter_id, []).append(
+                    ActivityRead(**activity.model_dump())
+                )
+
+        for chapter in chapters:
+            chapter.activities = chapter_activities_map.get(chapter.id, [])
 
     return chapters
 
@@ -278,7 +281,7 @@ async def DEPRECEATED_get_course_chapters(
         )
 
     # RBAC check
-    await rbac_check(request, course.course_uuid, current_user, "read", db_session)
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
 
     chapters_in_db = await get_course_chapters(request, course.id, db_session, current_user)  # type: ignore
 
@@ -305,9 +308,9 @@ async def DEPRECEATED_get_course_chapters(
     activities_list = {}
     statement = (
         select(Activity)
-        .join(ChapterActivity, ChapterActivity.activity_id == Activity.id)
+        .join(ChapterActivity, ChapterActivity.activity_id == Activity.id) # type: ignore
         .where(ChapterActivity.activity_id == Activity.id)
-        .group_by(Activity.id)
+        .group_by(Activity.id) # type: ignore
     )
     activities_in_db = db_session.exec(statement).all()
 
@@ -323,10 +326,10 @@ async def DEPRECEATED_get_course_chapters(
     # get chapter order
     statement = (
         select(Chapter)
-        .join(CourseChapter, CourseChapter.chapter_id == Chapter.id)
+        .join(CourseChapter, CourseChapter.chapter_id == Chapter.id) # type: ignore
         .where(CourseChapter.chapter_id == Chapter.id)
-        .group_by(Chapter.id, CourseChapter.order)
-        .order_by(CourseChapter.order)
+        .group_by(Chapter.id, CourseChapter.order) # type: ignore
+        .order_by(CourseChapter.order) # type: ignore
     )
     chapters_in_db = db_session.exec(statement).all()
 
@@ -360,221 +363,100 @@ async def reorder_chapters_and_activities(
         )
 
     # RBAC check
-    await rbac_check(request, course.course_uuid, current_user, "update", db_session)
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.UPDATE)
 
     ###########
     # Chapters
     ###########
 
-    # Delete CourseChapters that are not linked to chapter_id and activity_id and org_id and course_id
-    statement = (
-        select(CourseChapter)
-        .where(
-            CourseChapter.course_id == course.id, CourseChapter.org_id == course.org_id
-        )
-        .order_by(CourseChapter.order)
+    # Get all existing course chapters
+    statement = select(CourseChapter).where(
+        CourseChapter.course_id == course.id,
+        CourseChapter.org_id == course.org_id
     )
-    course_chapters = db_session.exec(statement).all()
+    existing_course_chapters = db_session.exec(statement).all()
 
-    chapter_ids_to_keep = [
-        chapter_order.chapter_id
-        for chapter_order in chapters_order.chapter_order_by_ids
-    ]
-    for course_chapter in course_chapters:
-        if course_chapter.chapter_id not in chapter_ids_to_keep:
-            db_session.delete(course_chapter)
-            db_session.commit()
+    # Create a map of existing chapters for faster lookup
+    existing_chapter_map = {cc.chapter_id: cc for cc in existing_course_chapters}
 
-    # Delete Chapters that are not in the list of chapters_order
-    statement = select(Chapter).where(Chapter.course_id == course.id)
-    chapters = db_session.exec(statement).all()
-
-    chapter_ids_to_keep = [
-        chapter_order.chapter_id
-        for chapter_order in chapters_order.chapter_order_by_ids
-    ]
-
-    for chapter in chapters:
-        if chapter.id not in chapter_ids_to_keep:
-            db_session.delete(chapter)
-            db_session.commit()
-
-    # If links do not exists, create them
-    for chapter_order in chapters_order.chapter_order_by_ids:
-        statement = (
-            select(CourseChapter)
-            .where(
-                CourseChapter.chapter_id == chapter_order.chapter_id,
-                CourseChapter.course_id == course.id,
-            )
-            .order_by(CourseChapter.order)
-        )
-        course_chapter = db_session.exec(statement).first()
-
-        if not course_chapter:
-            # Add CourseChapter link
+    # Update or create course chapters based on new order
+    for index, chapter_order in enumerate(chapters_order.chapter_order_by_ids):
+        if chapter_order.chapter_id in existing_chapter_map:
+            # Update existing chapter order
+            course_chapter = existing_chapter_map[chapter_order.chapter_id]
+            course_chapter.order = index
+            db_session.add(course_chapter)
+        else:
+            # Create new course chapter
             course_chapter = CourseChapter(
                 chapter_id=chapter_order.chapter_id,
-                course_id=course.id,  # type: ignore
+                course_id=course.id, # type: ignore
                 org_id=course.org_id,
                 creation_date=str(datetime.now()),
                 update_date=str(datetime.now()),
-                order=chapter_order.chapter_id,
+                order=index,
             )
-
-            # Insert CourseChapter link in DB
             db_session.add(course_chapter)
-            db_session.commit()
+        
+        db_session.commit()
 
-    # Update order of chapters
-    for chapter_order in chapters_order.chapter_order_by_ids:
-        statement = (
-            select(CourseChapter)
-            .where(
-                CourseChapter.chapter_id == chapter_order.chapter_id,
-                CourseChapter.course_id == course.id,
-            )
-            .order_by(CourseChapter.order)
-        )
-        course_chapter = db_session.exec(statement).first()
-
-        if course_chapter:
-            # Get the order from the index of the chapter_order_by_ids list
-            course_chapter.order = chapters_order.chapter_order_by_ids.index(
-                chapter_order
-            )
-            db_session.commit()
+    # Remove chapters that are no longer in the order
+    chapter_ids_to_keep = {co.chapter_id for co in chapters_order.chapter_order_by_ids}
+    for cc in existing_course_chapters:
+        if cc.chapter_id not in chapter_ids_to_keep:
+            db_session.delete(cc)
+    db_session.commit()
 
     ###########
     # Activities
     ###########
 
-    # Delete ChapterActivities that are no longer part of the new order
-    statement = (
-        select(ChapterActivity)
-        .where(
-            ChapterActivity.course_id == course.id,
-            ChapterActivity.org_id == course.org_id,
-        )
-        .order_by(ChapterActivity.order)
+    # Get all existing chapter activities
+    statement = select(ChapterActivity).where(
+        ChapterActivity.course_id == course.id,
+        ChapterActivity.org_id == course.org_id
     )
-    chapter_activities = db_session.exec(statement).all()
+    existing_chapter_activities = db_session.exec(statement).all()
 
-    activity_ids_to_delete = []
-    for chapter_activity in chapter_activities:
-        if (
-            chapter_activity.chapter_id not in chapter_ids_to_keep
-            or chapter_activity.activity_id not in activity_ids_to_delete
-        ):
-            activity_ids_to_delete.append(chapter_activity.activity_id)
+    # Create a map for faster lookup
+    existing_activity_map = {
+        (ca.chapter_id, ca.activity_id): ca 
+        for ca in existing_chapter_activities
+    }
 
-    for activity_id in activity_ids_to_delete:
-        statement = (
-            select(ChapterActivity)
-            .where(
-                ChapterActivity.activity_id == activity_id,
-                ChapterActivity.course_id == course.id,
-            )
-            .order_by(ChapterActivity.order)
-        )
-        chapter_activity = db_session.exec(statement).first()
+    # Track which activities we want to keep
+    activities_to_keep = set()
 
-        db_session.delete(chapter_activity)
-        db_session.commit()
-
-    # If links do not exist, create them
-    chapter_activity_map = {}
+    # Update or create chapter activities based on new order
     for chapter_order in chapters_order.chapter_order_by_ids:
-        for activity_order in chapter_order.activities_order_by_ids:
-            if (
-                activity_order.activity_id in chapter_activity_map
-                and chapter_activity_map[activity_order.activity_id]
-                != chapter_order.chapter_id
-            ):
-                continue
+        for index, activity_order in enumerate(chapter_order.activities_order_by_ids):
+            activity_key = (chapter_order.chapter_id, activity_order.activity_id)
+            activities_to_keep.add(activity_key)
 
-            statement = (
-                select(ChapterActivity)
-                .where(
-                    ChapterActivity.chapter_id == chapter_order.chapter_id,
-                    ChapterActivity.activity_id == activity_order.activity_id,
-                )
-                .order_by(ChapterActivity.order)
-            )
-            chapter_activity = db_session.exec(statement).first()
-
-            if not chapter_activity:
-                # Add ChapterActivity link
+            if activity_key in existing_activity_map:
+                # Update existing activity order
+                chapter_activity = existing_activity_map[activity_key]
+                chapter_activity.order = index
+                db_session.add(chapter_activity)
+            else:
+                # Create new chapter activity
                 chapter_activity = ChapterActivity(
                     chapter_id=chapter_order.chapter_id,
                     activity_id=activity_order.activity_id,
                     org_id=course.org_id,
-                    course_id=course.id,  # type: ignore
+                    course_id=course.id, # type: ignore
                     creation_date=str(datetime.now()),
                     update_date=str(datetime.now()),
-                    order=activity_order.activity_id,
+                    order=index,
                 )
-
-                # Insert ChapterActivity link in DB
                 db_session.add(chapter_activity)
-                db_session.commit()
+            
+            db_session.commit()
 
-            chapter_activity_map[activity_order.activity_id] = chapter_order.chapter_id
+    # Remove activities that are no longer in any chapter
+    for ca in existing_chapter_activities:
+        if (ca.chapter_id, ca.activity_id) not in activities_to_keep:
+            db_session.delete(ca)
+    db_session.commit()
 
-    # Update order of activities
-    for chapter_order in chapters_order.chapter_order_by_ids:
-        for activity_order in chapter_order.activities_order_by_ids:
-            statement = (
-                select(ChapterActivity)
-                .where(
-                    ChapterActivity.chapter_id == chapter_order.chapter_id,
-                    ChapterActivity.activity_id == activity_order.activity_id,
-                )
-                .order_by(ChapterActivity.order)
-            )
-            chapter_activity = db_session.exec(statement).first()
-
-            if chapter_activity:
-                # Get the order from the index of the chapter_order_by_ids list
-                chapter_activity.order = chapter_order.activities_order_by_ids.index(
-                    activity_order
-                )
-                db_session.commit()
-
-    return {"detail": "Chapters reordered"}
-
-
-## 🔒 RBAC Utils ##
-
-
-async def rbac_check(
-    request: Request,
-    course_uuid: str,
-    current_user: PublicUser | AnonymousUser,
-    action: Literal["create", "read", "update", "delete"],
-    db_session: Session,
-):
-    if action == "read":
-        if current_user.id == 0:  # Anonymous user
-            res = await authorization_verify_if_element_is_public(
-                request, course_uuid, action, db_session
-            )
-            return res
-        else:
-            res = await authorization_verify_based_on_roles_and_authorship_and_usergroups(
-                request, current_user.id, action, course_uuid, db_session
-            )
-            return res
-    else:
-        await authorization_verify_if_user_is_anon(current_user.id)
-
-        await authorization_verify_based_on_roles_and_authorship_and_usergroups(
-            request,
-            current_user.id,
-            action,
-            course_uuid,
-            db_session,
-        )
-
-
-## 🔒 RBAC Utils ##
+    return {"detail": "Chapters and activities reordered successfully"}

@@ -2,18 +2,16 @@ import React from 'react'
 import { Metadata } from 'next'
 import { getOrganizationContextInfo } from '@services/organizations/orgs'
 import Trail from './trail'
-import { getServerSession } from 'next-auth'
-import { nextAuthOptions } from 'app/auth/options'
+import { getServerSession } from '@/lib/auth/server'
 
 type MetadataProps = {
-  params: { orgslug: string }
-  searchParams: { [key: string]: string | string[] | undefined }
+  params: Promise<{ orgslug: string }>
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }
 
-export async function generateMetadata({
-  params,
-}: MetadataProps): Promise<Metadata> {
-  const session = await getServerSession(nextAuthOptions)
+export async function generateMetadata(props: MetadataProps): Promise<Metadata> {
+  const params = await props.params;
+  const session = await getServerSession()
   const access_token = session?.tokens?.access_token
   // Get Org context information
   const org = await getOrganizationContextInfo(params.orgslug, {
@@ -28,7 +26,7 @@ export async function generateMetadata({
 }
 
 const TrailPage = async (params: any) => {
-  let orgslug = params.params.orgslug
+  let orgslug = (await params.params).orgslug
 
   return (
     <div>

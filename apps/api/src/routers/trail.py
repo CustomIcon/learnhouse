@@ -2,6 +2,7 @@ from fastapi import APIRouter, Depends, Request
 from src.core.events.database import get_db_session
 from src.db.trails import TrailCreate, TrailRead
 from src.security.auth import get_current_user
+from src.security.features_utils.dependencies import require_courses_feature
 from src.services.trail.trail import (
     Trail,
     add_activity_to_trail,
@@ -10,10 +11,11 @@ from src.services.trail.trail import (
     get_user_trails,
     get_user_trail_with_orgid,
     remove_course_from_trail,
+    remove_activity_from_trail,
 )
 
 
-router = APIRouter()
+router = APIRouter(dependencies=[Depends(require_courses_feature)])
 
 
 @router.post("/start")
@@ -90,8 +92,21 @@ async def api_add_activity_to_trail(
     db_session=Depends(get_db_session),
 ) -> TrailRead:
     """
-    Add Course to trail
+    Add Activity to trail
     """
     return await add_activity_to_trail(
         request, user, activity_uuid, db_session
     )
+
+
+@router.delete("/remove_activity/{activity_uuid}")
+async def api_remove_activity_from_trail(
+    request: Request,
+    activity_uuid: str,
+    user=Depends(get_current_user),
+    db_session=Depends(get_db_session),
+) -> TrailRead:
+    """
+    Remove Activity from trail
+    """
+    return await remove_activity_from_trail(request, user, activity_uuid, db_session)

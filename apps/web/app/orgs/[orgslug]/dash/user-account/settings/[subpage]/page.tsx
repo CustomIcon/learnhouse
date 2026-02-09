@@ -1,87 +1,130 @@
 'use client'
-import React, { useEffect } from 'react'
+import React, { useEffect, use } from 'react';
 import { motion } from 'framer-motion'
-import UserEditGeneral from '@components/Dashboard/UserAccount/UserEditGeneral/UserEditGeneral'
-import UserEditPassword from '@components/Dashboard/UserAccount/UserEditPassword/UserEditPassword'
+import UserEditGeneral from '@components/Dashboard/Pages/UserAccount/UserEditGeneral/UserEditGeneral'
+import UserEditPassword from '@components/Dashboard/Pages/UserAccount/UserEditPassword/UserEditPassword'
 import Link from 'next/link'
 import { getUriWithOrg } from '@services/config/config'
-import { Info, Lock } from 'lucide-react'
-import BreadCrumbs from '@components/Dashboard/UI/BreadCrumbs'
+import { Info, Lock, LucideIcon, User } from 'lucide-react'
+import { Breadcrumbs } from '@components/Objects/Breadcrumbs/Breadcrumbs'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
+import UserProfile from '@components/Dashboard/Pages/UserAccount/UserProfile/UserProfile';
+import { useTranslation } from 'react-i18next';
+
+interface User {
+  username: string;
+  // Add other user properties as needed
+}
+
+interface Session {
+  user?: User;
+  // Add other session properties as needed
+}
 
 export type SettingsParams = {
   subpage: string
   orgslug: string
 }
 
-function SettingsPage({ params }: { params: SettingsParams }) {
-  const session = useLHSession() as any
+type NavigationItem = {
+  id: string
+  labelKey: string
+  icon: LucideIcon
+  component: React.ComponentType
+}
+
+const navigationItems: NavigationItem[] = [
+  {
+    id: 'general',
+    labelKey: 'user.settings.tabs.general',
+    icon: Info,
+    component: UserEditGeneral
+  },
+  {
+    id: 'profile',
+    labelKey: 'user.settings.tabs.profile',
+    icon: User,
+    component: UserProfile
+  },
+  {
+    id: 'security',
+    labelKey: 'user.settings.tabs.security',
+    icon: Lock,
+    component: UserEditPassword
+  },
+]
+
+const SettingsNavigation = ({ 
+  items, 
+  currentPage, 
+  orgslug 
+}: { 
+  items: NavigationItem[]
+  currentPage: string
+  orgslug: string 
+}) => {
+  const { t } = useTranslation();
+  return (
+    <div className="flex space-x-5 font-black text-sm">
+      {items.map((item) => (
+        <Link
+          key={item.id}
+          href={getUriWithOrg(orgslug, `/dash/user-account/settings/${item.id}`)}
+        >
+          <div
+            className={`py-2 w-fit text-center border-black transition-all ease-linear ${
+              currentPage === item.id ? 'border-b-4' : 'opacity-50'
+            } cursor-pointer`}
+          >
+            <div className="flex items-center space-x-2.5 mx-2">
+              <item.icon size={16} />
+              <div>{t(item.labelKey)}</div>
+            </div>
+          </div>
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+function SettingsPage({ params }: { params: Promise<SettingsParams> }) {
+  const { subpage, orgslug } = use(params);
+  const session = useLHSession() as Session;
+  const { t } = useTranslation();
 
   useEffect(() => {}, [session])
 
+  const CurrentComponent = navigationItems.find(item => item.id === subpage)?.component;
+
   return (
-    <div className="h-full w-full bg-[#f8f8f8]">
-      <div className="pl-10 pr-10  tracking-tight bg-[#fcfbfc] z-10 shadow-[0px_4px_16px_rgba(0,0,0,0.06)]">
-        <BreadCrumbs
-          type="user"
-          last_breadcrumb={session?.user?.username}
-        ></BreadCrumbs>
+    <div className="h-full w-full bg-[#f8f8f8] flex flex-col">
+      <div className="pl-10 pr-10 tracking-tight bg-[#fcfbfc] z-10 nice-shadow flex-shrink-0 relative">
+        <div className="pt-6 pb-4">
+          <Breadcrumbs items={[
+            { label: t('user.user_settings'), href: '/dash/user-account/settings/general', icon: <User size={14} /> },
+            ...(session?.user?.username ? [{ label: session.user.username }] : [])
+          ]} />
+        </div>
         <div className="my-2 tracking-tighter">
           <div className="w-100 flex justify-between">
-            <div className="pt-3 flex font-bold text-4xl">Account Settings</div>
+            <div className="pt-3 flex font-bold text-4xl">{t('user.settings.title')}</div>
           </div>
         </div>
-        <div className="flex space-x-5 font-black text-sm">
-          <Link
-            href={
-              getUriWithOrg(params.orgslug, '') +
-              `/dash/user-account/settings/general`
-            }
-          >
-            <div
-              className={`py-2 w-fit text-center border-black transition-all ease-linear ${
-                params.subpage.toString() === 'general'
-                  ? 'border-b-4'
-                  : 'opacity-50'
-              } cursor-pointer`}
-            >
-              <div className="flex items-center space-x-2.5 mx-2">
-                <Info size={16} />
-                <div>General</div>
-              </div>
-            </div>
-          </Link>
-          <Link
-            href={
-              getUriWithOrg(params.orgslug, '') +
-              `/dash/user-account/settings/security`
-            }
-          >
-            <div
-              className={`flex space-x-4 py-2 w-fit text-center border-black transition-all ease-linear ${
-                params.subpage.toString() === 'security'
-                  ? 'border-b-4'
-                  : 'opacity-50'
-              } cursor-pointer`}
-            >
-              <div className="flex items-center space-x-2.5 mx-2">
-                <Lock size={16} />
-                <div>Password</div>
-              </div>
-            </div>
-          </Link>
-        </div>
+        <SettingsNavigation 
+          items={navigationItems}
+          currentPage={subpage}
+          orgslug={orgslug}
+        />
       </div>
-      <div className="h-6"></div>
+      <div className="h-6 flex-shrink-0" />
       <motion.div
         initial={{ opacity: 0 }}
         animate={{ opacity: 1 }}
         exit={{ opacity: 0 }}
         transition={{ duration: 0.1, type: 'spring', stiffness: 80 }}
-        className="h-full overflow-y-auto"
+        className="flex-1 overflow-y-auto"
       >
-        {params.subpage == 'general' ? <UserEditGeneral /> : ''}
-        {params.subpage == 'security' ? <UserEditPassword /> : ''}
+        {CurrentComponent && <CurrentComponent />}
       </motion.div>
     </div>
   )

@@ -6,14 +6,14 @@ contact_email: hi@learnhouse.app
 
 general:
   development_mode: true
-  install_mode: true
+  logfire_enabled: false
 
 security:
-  auth_jwt_secret_key: secret
+  auth_jwt_secret_key: learnhouse-dev-secret-key-32chars!
 
 hosting_config:
-  domain: learnhouse.app
-  ssl: true
+  domain: localhost:3000
+  ssl: false
   port: 1338
   allowed_origins:
     - http://localhost:3000
@@ -29,7 +29,7 @@ hosting_config:
 
 mailing_config:
   resend_api_key: ""
-  system_email_adress: ""
+  system_email_address: ""
 
 database_config:
   sql_connection_string: postgresql://learnhouse:learnhouse@localhost:5432/learnhouse
@@ -37,7 +37,19 @@ database_config:
 redis_config:
   redis_connection_string: redis://localhost:6379/learnhouse
 
+payments_config:
+  stripe:
+    stripe_secret_key: ""
+    stripe_publishable_key: ""
+    stripe_webhook_standard_secret: ""
+    stripe_client_id: ""
+
 ai_config:
-  chromadb_config:
-    isSeparateDatabaseEnabled: True
-    db_host: "localhost"
+  gemini_api_key: ""
+  is_ai_enabled: false
+
+tinybird_config:
+  api_url: "https://api.tinybird.co"
+  # Set both tokens to enable analytics automatically
+  ingest_token: ""
+  read_token: ""

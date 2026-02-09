@@ -1,20 +1,65 @@
-import { getBackendUrl } from '@services/config/config'
-const LEARNHOUSE_MEDIA_URL = process.env.NEXT_PUBLIC_LEARNHOUSE_MEDIA_URL
+import { getBackendUrl, getConfig } from '@services/config/config'
 
 function getMediaUrl() {
-  if (LEARNHOUSE_MEDIA_URL) {
-    return LEARNHOUSE_MEDIA_URL
+  const mediaUrl = getConfig('NEXT_PUBLIC_LEARNHOUSE_MEDIA_URL');
+  if (mediaUrl) {
+    return mediaUrl;
   } else {
-    return getBackendUrl()
+    return getBackendUrl();
   }
+}
+
+function getApiUrl() {
+  return getBackendUrl();
+}
+
+/**
+ * Get the streaming URL for an activity video.
+ * Uses the optimized streaming endpoint with proper Range request support.
+ */
+export function getActivityVideoStreamUrl(
+  orgUUID: string,
+  courseUUID: string,
+  activityUUID: string,
+  filename: string
+) {
+  return `${getApiUrl()}api/v1/stream/video/${orgUUID}/${courseUUID}/${activityUUID}/${filename}`
+}
+
+/**
+ * Get the streaming URL for a video block.
+ * Uses the optimized streaming endpoint with proper Range request support.
+ */
+export function getVideoBlockStreamUrl(
+  orgUUID: string,
+  courseUUID: string,
+  activityUUID: string,
+  blockUUID: string,
+  filename: string
+) {
+  return `${getApiUrl()}api/v1/stream/block/${orgUUID}/${courseUUID}/${activityUUID}/${blockUUID}/${filename}`
 }
 
 export function getCourseThumbnailMediaDirectory(
   orgUUID: string,
-  courseId: string,
+  courseUUID: string,
   fileId: string
 ) {
-  let uri = `${getMediaUrl()}content/orgs/${orgUUID}/courses/${courseId}/thumbnails/${fileId}`
+  let uri = `${getMediaUrl()}content/orgs/${orgUUID}/courses/${courseUUID}/thumbnails/${fileId}`
+  return uri
+}
+
+export function getCommunityThumbnailMediaDirectory(
+  orgUUID: string,
+  communityUUID: string,
+  fileId: string
+) {
+  let uri = `${getMediaUrl()}content/orgs/${orgUUID}/communities/${communityUUID}/thumbnails/${fileId}`
+  return uri
+}
+
+export function getOrgLandingMediaDirectory(orgUUID: string, fileId: string) {
+  let uri = `${getMediaUrl()}content/orgs/${orgUUID}/landing/${fileId}`
   return uri
 }
 
@@ -95,4 +140,80 @@ export function getOrgLogoMediaDirectory(orgUUID: string, fileId: string) {
 export function getOrgThumbnailMediaDirectory(orgUUID: string, fileId: string) {
   let uri = `${getMediaUrl()}content/orgs/${orgUUID}/thumbnails/${fileId}`
   return uri
+}
+
+export function getOrgPreviewMediaDirectory(orgUUID: string, fileId: string) {
+  let uri = `${getMediaUrl()}content/orgs/${orgUUID}/previews/${fileId}`
+  return uri
+}
+
+export function getOrgAuthBackgroundMediaDirectory(orgUUID: string, fileId: string) {
+  let uri = `${getMediaUrl()}content/orgs/${orgUUID}/auth_backgrounds/${fileId}`
+  return uri
+}
+
+/**
+ * Get the URL for SCORM content files
+ * Routes through a local proxy to ensure same-origin for SCORM API injection
+ */
+export function getScormContentUrl(
+  orgUUID: string,
+  courseUUID: string,
+  activityUUID: string,
+  filePath: string
+): string {
+  // Use local proxy route to serve SCORM content from same origin
+  // This is required for the SCORM API to work properly in iframes
+  return `/api/scorm/${activityUUID}/content/${filePath}`
+}
+
+/**
+ * Get the thumbnail URL for a podcast
+ */
+export function getPodcastThumbnailMediaDirectory(
+  orgUUID: string,
+  podcastUUID: string,
+  fileId: string
+) {
+  let uri = `${getMediaUrl()}content/orgs/${orgUUID}/podcasts/${podcastUUID}/thumbnails/${fileId}`
+  return uri
+}
+
+/**
+ * Get the thumbnail URL for a podcast episode
+ */
+export function getEpisodeThumbnailMediaDirectory(
+  orgUUID: string,
+  podcastUUID: string,
+  episodeUUID: string,
+  fileId: string
+) {
+  let uri = `${getMediaUrl()}content/orgs/${orgUUID}/podcasts/${podcastUUID}/episodes/${episodeUUID}/thumbnails/${fileId}`
+  return uri
+}
+
+/**
+ * Get the direct media URL for a podcast episode audio file.
+ */
+export function getEpisodeAudioMediaDirectory(
+  orgUUID: string,
+  podcastUUID: string,
+  episodeUUID: string,
+  fileId: string
+) {
+  let uri = `${getMediaUrl()}content/orgs/${orgUUID}/podcasts/${podcastUUID}/episodes/${episodeUUID}/audio/${fileId}`
+  return uri
+}
+
+/**
+ * Get the streaming URL for a podcast episode audio file.
+ * Uses the optimized streaming endpoint with proper Range request support.
+ */
+export function getPodcastAudioStreamUrl(
+  orgUUID: string,
+  podcastUUID: string,
+  episodeUUID: string,
+  filename: string
+) {
+  return `${getApiUrl()}api/v1/stream/audio/${orgUUID}/${podcastUUID}/${episodeUUID}/${filename}`
 }

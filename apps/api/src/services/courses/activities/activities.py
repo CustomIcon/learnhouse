@@ -1,18 +1,16 @@
-from typing import Literal
 from sqlmodel import Session, select
 from src.db.courses.courses import Course
 from src.db.courses.chapters import Chapter
-from src.security.rbac.rbac import (
-    authorization_verify_based_on_roles_and_authorship_and_usergroups,
-    authorization_verify_if_element_is_public,
-    authorization_verify_if_user_is_anon,
-)
 from src.db.courses.activities import ActivityCreate, Activity, ActivityRead, ActivityUpdate
 from src.db.courses.chapter_activities import ChapterActivity
-from src.db.users import AnonymousUser, PublicUser
+from src.db.users import AnonymousUser, PublicUser, User
 from fastapi import HTTPException, Request
 from uuid import uuid4
 from datetime import datetime
+
+from src.core.ee_hooks import check_ee_activity_paid_access
+from src.security.rbac import check_resource_access, AccessAction
+from src.services.courses.activities.versioning import create_activity_version
 
 
 ####################################################
@@ -38,7 +36,16 @@ async def create_activity(
         )
 
     # RBAC check
-    await rbac_check(request, chapter.chapter_uuid, current_user, "create", db_session)
+    statement = select(Course).where(Course.id == chapter.course_id)
+    course = db_session.exec(statement).first()
+
+    if not course:
+        raise HTTPException(
+            status_code=404,
+            detail="Course not found",
+        )
+
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.CREATE)
 
     # Create Activity
     activity = Activity(**activity_object.model_dump())
@@ -90,31 +97,40 @@ async def get_activity(
     current_user: PublicUser,
     db_session: Session,
 ):
-    statement = select(Activity).where(Activity.activity_uuid == activity_uuid)
-    activity = db_session.exec(statement).first()
+    # Optimize by joining Activity with Course and last modified user in a single query
+    statement = (
+        select(Activity, Course, User)
+        .join(Course)
+        .outerjoin(User, Activity.last_modified_by_id == User.id)
+        .where(Activity.activity_uuid == activity_uuid)
+    )
+    result = db_session.exec(statement).first()
 
-    if not activity:
+    if not result:
         raise HTTPException(
             status_code=404,
             detail="Activity not found",
         )
 
-    # Get course from that activity
-    statement = select(Course).where(Course.id == activity.course_id)
-    course = db_session.exec(statement).first()
-
-    if not course:
-        raise HTTPException(
-            status_code=404,
-            detail="Course not found",
-        )
+    activity, course, last_modified_user = result
 
     # RBAC check
-    await rbac_check(request, course.course_uuid, current_user, "read", db_session)
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
 
-    activity = ActivityRead.model_validate(activity)
+    # Paid access check (via EE hook with fallback to True if EE not available)
+    has_paid_access = await check_ee_activity_paid_access(
+        request=request,
+        activity_id=activity.id if activity.id else 0,
+        user=current_user,
+        db_session=db_session
+    )
 
-    return activity
+    activity_read = ActivityRead.model_validate(activity)
+    activity_read.content = activity_read.content if has_paid_access else { "paid_access": False }
+    # Include last modified user info
+    activity_read.last_modified_by_username = last_modified_user.username if last_modified_user else None
+
+    return activity_read
 
 async def get_activityby_id(
     request: Request,
@@ -122,31 +138,26 @@ async def get_activityby_id(
     current_user: PublicUser,
     db_session: Session,
 ):
-    statement = select(Activity).where(Activity.id == activity_id)
-    activity = db_session.exec(statement).first()
+    # Optimize by joining Activity with Course in a single query
+    statement = (
+        select(Activity, Course)
+        .join(Course)
+        .where(Activity.id == activity_id)
+    )
+    result = db_session.exec(statement).first()
 
-    if not activity:
+    if not result:
         raise HTTPException(
             status_code=404,
             detail="Activity not found",
         )
-
-    # Get course from that activity
-    statement = select(Course).where(Course.id == activity.course_id)
-    course = db_session.exec(statement).first()
-
-    if not course:
-        raise HTTPException(
-            status_code=404,
-            detail="Course not found",
-        )
+    
+    activity, course = result
 
     # RBAC check
-    await rbac_check(request, course.course_uuid, current_user, "read", db_session)
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
 
-    activity = ActivityRead.model_validate(activity)
-
-    return activity
+    return ActivityRead.model_validate(activity)
 
 
 async def update_activity(
@@ -156,6 +167,10 @@ async def update_activity(
     current_user: PublicUser | AnonymousUser,
     db_session: Session,
 ):
+    import logging
+    import json
+    logger = logging.getLogger(__name__)
+
     statement = select(Activity).where(Activity.activity_uuid == activity_uuid)
     activity = db_session.exec(statement).first()
 
@@ -166,18 +181,73 @@ async def update_activity(
         )
 
     # RBAC check
-    await rbac_check(
-        request, activity.activity_uuid, current_user, "update", db_session
-    )
+    statement = select(Course).where(Course.id == activity.course_id)
+    course = db_session.exec(statement).first()
 
-    # Update only the fields that were passed in
-    for var, value in vars(activity_object).items():
-        if value is not None:
-            setattr(activity, var, value)
+    if not course:
+        raise HTTPException(
+            status_code=404,
+            detail="Course not found",
+        )
+
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.UPDATE)
+
+    # Update only the fields that were explicitly set (not default values)
+    # Using model_dump(exclude_unset=True) to get only the fields that were passed in
+    update_data = activity_object.model_dump(exclude_unset=True)
+
+    # Create a version snapshot before updating content
+    # This preserves the current state for version history
+    if 'content' in update_data and activity.content:
+        user_id = current_user.id if hasattr(current_user, 'id') else None
+        await create_activity_version(activity, user_id, db_session)
+        # Increment version number
+        activity.current_version = (activity.current_version or 1) + 1
+        # Track who made the change
+        activity.last_modified_by_id = user_id
+
+    # Debug logging for content updates
+    if 'content' in update_data:
+        content = update_data['content']
+        logger.info(f"[Activity Update] Activity UUID: {activity_uuid}")
+        logger.info(f"[Activity Update] Content type: {type(content)}")
+        if isinstance(content, dict):
+            logger.info(f"[Activity Update] Content has 'type' key: {'type' in content}")
+            logger.info(f"[Activity Update] Content 'type' value: {content.get('type')}")
+            try:
+                # Test serialization with ensure_ascii=False to preserve Unicode
+                content_json = json.dumps(content, ensure_ascii=False)
+                logger.info(f"[Activity Update] Content JSON size: {len(content_json)} bytes")
+                logger.info(f"[Activity Update] Content JSON valid: {content_json.startswith('{') and content_json.endswith('}')}")
+                # Try to parse it back to verify round-trip
+                json.loads(content_json)
+                logger.info("[Activity Update] Content JSON round-trip: SUCCESS")
+            except Exception as e:
+                logger.error(f"[Activity Update] Content JSON serialization error: {e}")
+        elif isinstance(content, str):
+            logger.warning(f"[Activity Update] Content is STRING not dict! Length: {len(content)}")
+            logger.warning(f"[Activity Update] Content preview: {content[:200]}")
+
+    for field, value in update_data.items():
+        setattr(activity, field, value)
+
+    # Update the update_date timestamp
+    activity.update_date = str(datetime.now())
+
+    # Mark content as modified if it was updated (important for JSON fields)
+    if 'content' in update_data:
+        from sqlalchemy.orm.attributes import flag_modified
+        flag_modified(activity, "content")
 
     db_session.add(activity)
     db_session.commit()
     db_session.refresh(activity)
+
+    # Verify the save worked
+    if 'content' in update_data:
+        logger.info(f"[Activity Update] Post-save content type: {type(activity.content)}")
+        if isinstance(activity.content, dict):
+            logger.info(f"[Activity Update] Post-save content 'type': {activity.content.get('type')}")
 
     activity = ActivityRead.model_validate(activity)
 
@@ -200,9 +270,25 @@ async def delete_activity(
         )
 
     # RBAC check
-    await rbac_check(
-        request, activity.activity_uuid, current_user, "delete", db_session
-    )
+    statement = select(Course).where(Course.id == activity.course_id)
+    course = db_session.exec(statement).first()
+
+    if not course:
+        raise HTTPException(
+            status_code=404,
+            detail="Course not found",
+        )
+
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.DELETE)
+
+    # Clean up content files from storage
+    from src.db.organizations import Organization
+    org_statement = select(Organization).where(Organization.id == course.org_id)
+    org = db_session.exec(org_statement).first()
+    if org:
+        from src.services.courses.transfer.storage_utils import delete_storage_directory
+        content_path = f"content/orgs/{org.org_uuid}/courses/{course.course_uuid}/activities/{activity_uuid}"
+        delete_storage_directory(content_path)
 
     # Delete activity from chapter
     statement = select(ChapterActivity).where(
@@ -234,56 +320,44 @@ async def get_activities(
     current_user: PublicUser | AnonymousUser,
     db_session: Session,
 ) -> list[ActivityRead]:
-    statement = select(ChapterActivity).where(
-        ChapterActivity.chapter_id == coursechapter_id
+    # Get activities that are published and belong to the chapter
+    statement = (
+        select(Activity)
+        .join(ChapterActivity)
+        .where(
+            ChapterActivity.chapter_id == coursechapter_id,
+            Activity.published == True
+        )
     )
     activities = db_session.exec(statement).all()
 
     if not activities:
         raise HTTPException(
             status_code=404,
-            detail="No activities found",
+            detail="No published activities found",
         )
 
     # RBAC check
-    await rbac_check(request, "activity_x", current_user, "read", db_session)
+    statement = select(Chapter).where(Chapter.id == coursechapter_id)
+    chapter = db_session.exec(statement).first()
+    
+    if not chapter:
+        raise HTTPException(
+            status_code=404,
+            detail="Chapter not found",
+        )
+
+    statement = select(Course).where(Course.id == chapter.course_id)
+    course = db_session.exec(statement).first()
+
+    if not course:
+        raise HTTPException(
+            status_code=404,
+            detail="Course not found",
+        )
+
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.READ)
 
     activities = [ActivityRead.model_validate(activity) for activity in activities]
 
     return activities
-
-
-## 🔒 RBAC Utils ##
-
-
-async def rbac_check(
-    request: Request,
-    course_uuid: str,
-    current_user: PublicUser | AnonymousUser,
-    action: Literal["create", "read", "update", "delete"],
-    db_session: Session,
-):
-    if action == "read":
-        if current_user.id == 0:  # Anonymous user
-            res = await authorization_verify_if_element_is_public(
-                request, course_uuid, action, db_session
-            )
-            return res
-        else:
-            res = await authorization_verify_based_on_roles_and_authorship_and_usergroups(
-                request, current_user.id, action, course_uuid, db_session
-            )
-            return res
-    else:
-        await authorization_verify_if_user_is_anon(current_user.id)
-
-        await authorization_verify_based_on_roles_and_authorship_and_usergroups(
-            request,
-            current_user.id,
-            action,
-            course_uuid,
-            db_session,
-        )
-
-
-## 🔒 RBAC Utils ##

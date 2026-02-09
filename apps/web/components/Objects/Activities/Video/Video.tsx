@@ -1,51 +1,98 @@
 import React from 'react'
 import YouTube from 'react-youtube'
-import { getActivityMediaDirectory } from '@services/media/media'
+import { getActivityVideoStreamUrl } from '@services/media/media'
 import { useOrg } from '@components/Contexts/OrgContext'
+import LearnHousePlayer from './LearnHousePlayer'
 
-function VideoActivity({ activity, course }: { activity: any; course: any }) {
+interface VideoDetails {
+  startTime?: number
+  endTime?: number | null
+  autoplay?: boolean
+  muted?: boolean
+}
+
+interface VideoActivityProps {
+  activity: {
+    activity_sub_type: string
+    activity_uuid: string
+    content: {
+      filename?: string
+      uri?: string
+    }
+    details?: VideoDetails
+  }
+  course: {
+    course_uuid: string
+  }
+}
+
+function VideoActivity({ activity, course }: VideoActivityProps) {
   const org = useOrg() as any
   const [videoId, setVideoId] = React.useState('')
 
   React.useEffect(() => {
-    if (activity && activity.content && activity.content.uri) {
-      var getYouTubeID = require('get-youtube-id');
+    if (activity?.content?.uri) {
+      var getYouTubeID = require('get-youtube-id')
       setVideoId(getYouTubeID(activity.content.uri))
     }
   }, [activity, org])
 
+  const getVideoSrc = () => {
+    if (!activity.content?.filename) return ''
+    return getActivityVideoStreamUrl(
+      org?.org_uuid,
+      course?.course_uuid,
+      activity.activity_uuid,
+      activity.content.filename
+    )
+  }
+
   return (
-    <div>
+    <div className="w-full max-w-full px-2 sm:px-4">
       {activity && (
         <>
           {activity.activity_sub_type === 'SUBTYPE_VIDEO_HOSTED' && (
-            <div className="m-8 bg-zinc-900 rounded-md mt-14">
-              <video
-                className="rounded-lg w-full h-[500px]"
-                controls
-                src={getActivityMediaDirectory(
-                  org?.org_uuid,
-                  course?.course_uuid,
-                  activity.activity_uuid,
-                  activity.content?.filename,
-                  'video'
-                )}
-              ></video>
+            <div className="my-3 md:my-5 w-full">
+              <div className="relative w-full aspect-video rounded-lg overflow-hidden ring-1 ring-gray-300/30 dark:ring-gray-600/30 sm:ring-gray-200/10 sm:dark:ring-gray-700/20 shadow-xs sm:shadow-none">
+                {(() => {
+                  const src = getVideoSrc()
+                  return src ? (
+                    <LearnHousePlayer
+                      key={activity.activity_uuid}
+                      src={src}
+                      details={activity.details}
+                    />
+                  ) : null
+                })()}
+              </div>
             </div>
           )}
           {activity.activity_sub_type === 'SUBTYPE_VIDEO_YOUTUBE' && (
-            <div>
-              <YouTube
-                className="rounded-md overflow-hidden m-8 bg-zinc-900  mt-14"
-                opts={{
-                  width: '1300',
-                  height: '500',
-                  playerVars: {
-                    autoplay: 0,
-                  },
-                }}
-                videoId={videoId}
-              />
+            <div className="my-3 md:my-5 w-full">
+              <div className="relative w-full aspect-video rounded-lg overflow-hidden ring-1 ring-gray-300/30 dark:ring-gray-600/30 sm:ring-gray-200/10 sm:dark:ring-gray-700/20 shadow-xs sm:shadow-none">
+                <YouTube
+                  className="w-full h-full"
+                  opts={{
+                    width: '100%',
+                    height: '100%',
+                    playerVars: {
+                      autoplay: activity.details?.autoplay ? 1 : 0,
+                      mute: activity.details?.muted ? 1 : 0,
+                      start: activity.details?.startTime || 0,
+                      end: activity.details?.endTime || undefined,
+                      controls: 1,
+                      modestbranding: 1,
+                      rel: 0
+                    },
+                  }}
+                  videoId={videoId}
+                  onReady={(event) => {
+                    if (activity.details?.startTime) {
+                      event.target.seekTo(activity.details.startTime, true)
+                    }
+                  }}
+                />
+              </div>
             </div>
           )}
         </>

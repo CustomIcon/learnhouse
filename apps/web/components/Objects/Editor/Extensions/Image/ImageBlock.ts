@@ -6,7 +6,7 @@ import ImageBlockComponent from './ImageBlockComponent'
 export default Node.create({
   name: 'blockImage',
   group: 'block',
-
+  draggable: true,
   atom: true,
 
   addAttributes() {
@@ -16,6 +16,9 @@ export default Node.create({
       },
       size: {
         width: 300,
+      },
+      alignment: {
+        default: 'center',
       },
     }
   },

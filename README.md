@@ -8,15 +8,13 @@ LearnHouse is an open source platform that makes it easy for anyone to provide w
 
 ## Progress
 
-🚧 LearnHouse is still on early development (alpha), as we reach stability we will release a stable version and add more features.
+🚧 LearnHouse is still on development (beta), as we reach stability we will release a stable version and add more features.
 
 ## Roadmap
 
 We prioritize issues depending on the most requested features from our users, please help us prioritize issues by commenting on them and sharing your thoughts 
 
 [🚢 LearnHouse General Roadmap](https://www.learnhouse.app/roadmap)
-
-[👨‍💻 Detailed Roadmap](https://github.com/orgs/learnhouse/projects/4/views/1)
 
 ## Overview
 
@@ -32,9 +30,7 @@ We prioritize issues depending on the most requested features from our users, pl
 - 🍱 Course Collections
 - 👟 Course Progress
 - 🛜 Course Updates
-- 💬 Discussions
 - ✨ LearnHouse AI : The Teachers and Students copilot
-- 👪 Multiplayer Course edition
 - More to come
 
 ## Community
@@ -66,7 +62,9 @@ TLDR: Run `docker-compose up -d` and inspect the logs, should be ready to go in 
 
 ### Set-up a Development Environment 
 
-- [Detailed Guide](https://docs.learnhouse.app/setup-dev-environment)
+
+
+For a detailed step-by-step guide on configuring the backend and frontend, please refer to the [Development Guide](/dev/DEVELOPMENT.md).
 
 ## Tech
 
@@ -77,10 +75,8 @@ LearnHouse uses a number of open source projects to work properly:
 - **Radix UI** - Accessible UI Components
 - **Tiptap** - An editor framework and headless wrapper around ProseMirror
 - **FastAPI** - A high performance, async API framework for Python
-- **YJS** - Shared data types for building collaborative software
 - **PostgreSQL** - SQL Database
 - **Redis** - In-Memory Database
-- **LangChain** - LangChain is a framework for developing applications powered by language models
 - **React** - duh
 
 ## LearnHouse University

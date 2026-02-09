@@ -6,13 +6,17 @@ import { useOrg } from '@components/Contexts/OrgContext'
 interface AuthenticatedClientElementProps {
   children: React.ReactNode
   checkMethod: 'authentication' | 'roles'
-  orgId?: string
+  orgId?: string | number
   ressourceType?:
   | 'collections'
   | 'courses'
   | 'activities'
   | 'users'
   | 'organizations'
+  | 'communities'
+  | 'discussions'
+  | 'podcasts'
+  | 'docspaces'
   action?: 'create' | 'update' | 'delete' | 'read'
 }
 
@@ -29,7 +33,10 @@ export const AuthenticatedClientElement = (
     resourceType: string,
     org_uuid: string
   ): boolean {
-    // Iterate over the user's roles
+    if (!Array.isArray(roles)) {
+      return false
+    }
+
     for (const role of roles) {
       // Check if the role is for the right organization
       if (role.org.org_uuid === org_uuid) {

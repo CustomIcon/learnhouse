@@ -3,39 +3,53 @@ import { getCourseMetadata } from '@services/courses/courses'
 import ActivityClient from './activity'
 import { getOrganizationContextInfo } from '@services/organizations/orgs'
 import { Metadata } from 'next'
-import { getServerSession } from 'next-auth'
-import { nextAuthOptions } from 'app/auth/options'
+import { getServerSession } from '@/lib/auth/server'
+import { notFound } from 'next/navigation'
 
 type MetadataProps = {
-  params: { orgslug: string; courseuuid: string; activityid: string }
-  searchParams: { [key: string]: string | string[] | undefined }
+  params: Promise<{ orgslug: string; courseuuid: string; activityid: string }>
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }
 
-export async function generateMetadata({
-  params,
-}: MetadataProps): Promise<Metadata> {
-  const session = await getServerSession(nextAuthOptions)
-  const access_token = session?.tokens?.access_token
+type Session = {
+  tokens?: {
+    access_token?: string
+  }
+}
+
+// Add this function at the top level to avoid duplicate fetches
+async function fetchCourseMetadata(courseuuid: string, access_token: string | null | undefined) {
+  return await getCourseMetadata(
+    courseuuid,
+    { revalidate: 60, tags: ['courses'] },
+    access_token || null
+  )
+}
+
+export async function generateMetadata(props: MetadataProps): Promise<Metadata> {
+  const params = await props.params;
+  const session = await getServerSession()
+  const access_token = session?.tokens?.access_token || null
 
   // Get Org context information
   const org = await getOrganizationContextInfo(params.orgslug, {
     revalidate: 1800,
     tags: ['organizations'],
   })
-  const course_meta = await getCourseMetadata(
-    params.courseuuid,
-    { revalidate: 0, tags: ['courses'] },
-    access_token ? access_token : null
-  )
+  const course_meta = await fetchCourseMetadata(params.courseuuid, access_token)
   const activity = await getActivityWithAuthHeader(
     params.activityid,
     { revalidate: 0, tags: ['activities'] },
-    access_token ? access_token : null
+    access_token || null
   )
+
+  // Check if this is the course end page
+  const isCourseEnd = params.activityid === 'end';
+  const pageTitle = isCourseEnd ? `Congratulations — ${course_meta.name} Course` : activity.name + ` — ${course_meta.name} Course`;
 
   // SEO
   return {
-    title: activity.name + ` — ${course_meta.name} Course`,
+    title: pageTitle,
     description: course_meta.description,
     keywords: course_meta.learnings,
     robots: {
@@ -49,7 +63,7 @@ export async function generateMetadata({
       },
     },
     openGraph: {
-      title: activity.name + ` — ${course_meta.name} Course`,
+      title: pageTitle,
       description: course_meta.description,
       publishedTime: course_meta.creation_date,
       tags: course_meta.learnings,
@@ -58,32 +72,42 @@ export async function generateMetadata({
 }
 
 const ActivityPage = async (params: any) => {
-  const session = await getServerSession(nextAuthOptions)
-  const access_token = session?.tokens?.access_token
-  const activityid = params.params.activityid
-  const courseuuid = params.params.courseuuid
-  const orgslug = params.params.orgslug
+  const session = await getServerSession()
+  const access_token = session?.tokens?.access_token || null
+  const activityid = (await params.params).activityid
+  const courseuuid = (await params.params).courseuuid
+  const orgslug = (await params.params).orgslug
 
-  const course_meta = await getCourseMetadata(
-    courseuuid,
-    { revalidate: 0, tags: ['courses'] },
-    access_token ? access_token : null
-  )
-  const activity = await getActivityWithAuthHeader(
-    activityid,
-    { revalidate: 0, tags: ['activities'] },
-    access_token ? access_token : null
-  )
+  let course_meta
+  let activity
+
+  try {
+    [course_meta, activity] = await Promise.all([
+      fetchCourseMetadata(courseuuid, access_token),
+      getActivityWithAuthHeader(
+        activityid,
+        { revalidate: 0, tags: ['activities'] },
+        access_token || null
+      )
+    ])
+  } catch (error) {
+    // If course or activity not found (404) or any error, show not found
+    notFound()
+  }
+
+  // If no course data returned, show not found
+  if (!course_meta || !activity) {
+    notFound()
+  }
+
   return (
-    <>
-      <ActivityClient
-        activityid={activityid}
-        courseuuid={courseuuid}
-        orgslug={orgslug}
-        activity={activity}
-        course={course_meta}
-      />
-    </>
+    <ActivityClient
+      activityid={activityid}
+      courseuuid={courseuuid}
+      orgslug={orgslug}
+      activity={activity}
+      course={course_meta}
+    />
   )
 }
 

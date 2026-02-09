@@ -1,31 +1,31 @@
-# Use an official Python runtime as a parent image
-FROM python:3.12.3-slim
+FROM python:3.12-slim-bookworm
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=off \
-    PIP_DISABLE_PIP_VERSION_CHECK=on 
+# Install curl and netcat for health checks and service waiting
+RUN apt-get update && apt-get install -y curl netcat-openbsd && rm -rf /var/lib/apt/lists/*
 
-# Set work directory
-WORKDIR /usr/learnhouse-api
+COPY --from=ghcr.io/astral-sh/uv:0.9.7 /uv /uvx /bin/
 
-# Install system dependencies and Poetry
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/* \
-    && pip install --no-cache-dir poetry \
-    && poetry config virtualenvs.create false
+# Copy the project into the image
+ADD . /app
 
-# Copy only requirements to cache them in docker layer
-COPY poetry.lock pyproject.toml ./
+# Remove Enterprise Edition folder for public builds
+ARG LEARNHOUSE_PUBLIC=false
+RUN if [ "$LEARNHOUSE_PUBLIC" = "true" ]; then rm -rf /app/ee; fi
 
-# Install dependencies
-RUN poetry install --no-interaction --no-ansi --no-root --only main
+# Sync the project into a new environment, using the frozen lockfile
+WORKDIR /app
+RUN uv sync --frozen
 
-# Copy the current directory contents into the container
-COPY . .
+# Copy entrypoint script
+COPY docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
 
-# Run the application
-CMD ["python", "app.py"]
+# Expose port
+EXPOSE 9000
+
+# Health check endpoint
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+  CMD curl -f http://localhost:9000/api/v1/health || exit 1
+
+# Use entrypoint script
+ENTRYPOINT ["./docker-entrypoint.sh"]

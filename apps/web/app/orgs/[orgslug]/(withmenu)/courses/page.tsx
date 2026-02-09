@@ -2,19 +2,17 @@ import React from 'react'
 import Courses from './courses'
 import { Metadata } from 'next'
 import { getOrganizationContextInfo } from '@services/organizations/orgs'
-import { nextAuthOptions } from 'app/auth/options'
-import { getServerSession } from 'next-auth'
+import { getServerSession } from '@/lib/auth/server'
 import { getOrgCourses } from '@services/courses/courses'
 import { getOrgThumbnailMediaDirectory } from '@services/media/media'
 
 type MetadataProps = {
-  params: { orgslug: string }
-  searchParams: { [key: string]: string | string[] | undefined }
+  params: Promise<{ orgslug: string }>
+  searchParams: Promise<{ [key: string]: string | string[] | undefined }>
 }
 
-export async function generateMetadata({
-  params,
-}: MetadataProps): Promise<Metadata> {
+export async function generateMetadata(props: MetadataProps): Promise<Metadata> {
+  const params = await props.params;
   // Get Org context information
   const org = await getOrganizationContextInfo(params.orgslug, {
     revalidate: 0,
@@ -53,23 +51,34 @@ export async function generateMetadata({
 }
 
 const CoursesPage = async (params: any) => {
-  const orgslug = params.params.orgslug
+  const orgslug = (await params.params).orgslug
   const org = await getOrganizationContextInfo(orgslug, {
     revalidate: 1800,
     tags: ['organizations'],
   })
-  const session = await getServerSession(nextAuthOptions)
+  const session = await getServerSession()
   const access_token = session?.tokens?.access_token
 
-  const courses = await getOrgCourses(
-    orgslug,
-    { revalidate: 0, tags: ['courses'] },
-    access_token ? access_token : null
-  )
+  let courses: any[] = []
+  try {
+    courses = await getOrgCourses(
+      orgslug,
+      { revalidate: 0, tags: ['courses'] },
+      access_token ?? undefined
+    )
+  } catch (error: any) {
+    // If feature is disabled (403), pass empty courses array
+    // The client component will show the feature disabled view
+    if (error?.status === 403) {
+      courses = []
+    } else {
+      throw error
+    }
+  }
 
   return (
     <div>
-      <Courses org_id={org.org_id} orgslug={orgslug} courses={courses} />
+      <Courses org_id={org.id} orgslug={orgslug} courses={courses} />
     </div>
   )
 }

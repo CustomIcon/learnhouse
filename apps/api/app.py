@@ -1,16 +1,17 @@
 import uvicorn
-from fastapi import FastAPI, Request
+import logfire
+import sentry_sdk
+from fastapi import FastAPI
 from config.config import LearnHouseConfig, get_learnhouse_config
 from src.core.events.events import shutdown_app, startup_app
 from src.router import v1_router
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
-from fastapi_jwt_auth.exceptions import AuthJWTException
 from fastapi.middleware.gzip import GZipMiddleware
+from src.core.ee_hooks import register_ee_middlewares
+from src.security.csrf import CSRFProtectionMiddleware
+from src.routers.content_files import router as content_files_router
 
-
-# from src.services.mocks.initial import create_initial_data
 
 ########################
 # Pre-Alpha Version 0.1.0
@@ -20,6 +21,18 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 # Get LearnHouse Config
 learnhouse_config: LearnHouseConfig = get_learnhouse_config()
+
+# Initialize Sentry if configured
+if learnhouse_config.general_config.sentry_config.dsn:
+    sentry_sdk.init(
+        dsn=learnhouse_config.general_config.sentry_config.dsn,
+        environment=learnhouse_config.general_config.env,
+        send_default_pii=True,
+        enable_logs=True,
+        traces_sample_rate=1.0 if learnhouse_config.general_config.development_mode else 0.5,
+        profile_session_sample_rate=1.0 if learnhouse_config.general_config.development_mode else 0.5,
+        profile_lifecycle="trace",
+    )
 
 # Global Config
 app = FastAPI(
@@ -38,8 +51,22 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# CSRF Protection - validates Origin header on state-changing requests
+app.add_middleware(CSRFProtectionMiddleware)
+
+# Only enable logfire if explicitly configured
+if learnhouse_config.general_config.logfire_enabled:
+    logfire.configure(console=False, service_name=learnhouse_config.site_name,)
+    logfire.instrument_fastapi(app)
+    # Instrument database after logfire is configured
+    from src.core.events.database import engine
+    logfire.instrument_sqlalchemy(engine=engine)
+
 # Gzip Middleware (will add brotli later)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+
+# Register EE Middlewares if available
+register_ee_middlewares(app)
 
 
 # Events
@@ -47,17 +74,11 @@ app.add_event_handler("startup", startup_app(app))
 app.add_event_handler("shutdown", shutdown_app(app))
 
 
-# JWT Exception Handler
-@app.exception_handler(AuthJWTException)
-def authjwt_exception_handler(request: Request, exc: AuthJWTException):
-    return JSONResponse(
-        status_code=exc.status_code,  # type: ignore
-        content={"detail": exc.message},  # type: ignore
-    )
-
-
-# Static Files
-app.mount("/content", StaticFiles(directory="content"), name="content")
+# Static Files - use S3-aware router when S3 is enabled, otherwise serve locally
+if learnhouse_config.hosting_config.content_delivery.type == "s3api":
+    app.include_router(content_files_router)
+else:
+    app.mount("/content", StaticFiles(directory="content"), name="content")
 
 # Global Routes
 app.include_router(v1_router)

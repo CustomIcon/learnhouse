@@ -30,7 +30,7 @@ class StorageOrgConfig(BaseModel):
 class AIOrgConfig(BaseModel):
     enabled: bool = True
     limit: int = 10
-    model: str = "gpt-4o-mini"
+    model: str = ""
 
 
 class AssignmentOrgConfig(BaseModel):
@@ -40,12 +40,19 @@ class AssignmentOrgConfig(BaseModel):
 
 class PaymentOrgConfig(BaseModel):
     enabled: bool = True
-    stripe_key: str = ""
 
 
 class DiscussionOrgConfig(BaseModel):
     enabled: bool = True
     limit: int = 10
+
+
+class CommunitiesOrgConfig(BaseModel):
+    enabled: bool = True
+
+
+class CollectionsOrgConfig(BaseModel):
+    enabled: bool = True
 
 
 class AnalyticsOrgConfig(BaseModel):
@@ -63,6 +70,16 @@ class APIOrgConfig(BaseModel):
     limit: int = 10
 
 
+class PodcastsOrgConfig(BaseModel):
+    enabled: bool = False  # Disabled by default, requires standard+ plan
+    limit: int = 10
+
+
+class DocsOrgConfig(BaseModel):
+    enabled: bool = False
+    limit: int = 5
+
+
 class OrgFeatureConfig(BaseModel):
     courses: CourseOrgConfig = CourseOrgConfig()
     members: MemberOrgConfig = MemberOrgConfig()
@@ -72,29 +89,45 @@ class OrgFeatureConfig(BaseModel):
     assignments: AssignmentOrgConfig = AssignmentOrgConfig()
     payments: PaymentOrgConfig = PaymentOrgConfig()
     discussions: DiscussionOrgConfig = DiscussionOrgConfig()
+    communities: CommunitiesOrgConfig = CommunitiesOrgConfig()
+    collections: CollectionsOrgConfig = CollectionsOrgConfig()
     analytics: AnalyticsOrgConfig = AnalyticsOrgConfig()
     collaboration: CollaborationOrgConfig = CollaborationOrgConfig()
     api: APIOrgConfig = APIOrgConfig()
+    podcasts: PodcastsOrgConfig = PodcastsOrgConfig()
+    docs: DocsOrgConfig = DocsOrgConfig()
+
+
+# Auth Branding
+class AuthBrandingConfig(BaseModel):
+    welcome_message: str = ""  # Custom welcome text
+    background_type: Literal["gradient", "custom", "unsplash"] = "gradient"
+    background_image: str = ""  # Filename (custom) or URL (unsplash)
+    text_color: Literal["light", "dark"] = "light"
 
 
 # General
 class OrgGeneralConfig(BaseModel):
     enabled: bool = True
-    color: str = "normal"
+    color: str = ""
+    footer_text: str = ""
     watermark: bool = True
+    auth_branding: AuthBrandingConfig = AuthBrandingConfig()
+
 
 # Cloud
 class OrgCloudConfig(BaseModel):
-    plan: Literal["free", "standard", "pro"] = "free"
+    plan: Literal["free", "standard", "pro", "enterprise"] = "free"
     custom_domain: bool = False
 
 
 # Main Config
 class OrganizationConfigBase(BaseModel):
-    config_version: str = "1.1"
+    config_version: str = "1.4"
     general: OrgGeneralConfig
     features: OrgFeatureConfig
     cloud: OrgCloudConfig
+    landing: dict = Field(default_factory=dict)
 
 
 class OrganizationConfig(SQLModel, table=True):
@@ -102,6 +135,6 @@ class OrganizationConfig(SQLModel, table=True):
     org_id: int = Field(
         sa_column=Column(BigInteger, ForeignKey("organization.id", ondelete="CASCADE"))
     )
-    config: dict = Field(default={}, sa_column=Column(JSON))
-    creation_date: Optional[str]
-    update_date: Optional[str]
+    config: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    creation_date: Optional[str] = None
+    update_date: Optional[str] = None

@@ -4,8 +4,10 @@ import Picker from '@emoji-mart/react'
 import { ArrowRight, ChevronDown, Link, AlignLeft, AlignCenter, AlignRight, Palette } from 'lucide-react'
 import { twMerge } from 'tailwind-merge'
 import { useEditorProvider } from '@components/Contexts/Editor/EditorContext'
+import { useTranslation } from 'react-i18next'
 
 const ButtonsExtension: React.FC = (props: any) => {
+  const { t } = useTranslation()
   const [emoji, setEmoji] = useState(props.node.attrs.emoji)
   const [link, setLink] = useState(props.node.attrs.link)
   const [alignment, setAlignment] = useState(props.node.attrs.alignment)
@@ -144,7 +146,7 @@ const ButtonsExtension: React.FC = (props: any) => {
           type="text"
           value={link}
           onChange={handleLinkChange}
-          placeholder="Enter link URL"
+          placeholder={t('editor.blocks.button_block.enter_link_url')}
           className="mt-2 p-2 w-full border rounded-md"
         />
       )}
@@ -154,7 +156,7 @@ const ButtonsExtension: React.FC = (props: any) => {
             {colors.map((c) => (
               <button
                 key={c}
-                className={`w-6 h-6 rounded-full ${getButtonColor(c)} hover:ring-2 hover:ring-opacity-50 focus:outline-none focus:ring-2 focus:ring-opacity-50`}
+                className={`w-6 h-6 rounded-full ${getButtonColor(c)} hover:ring-2 hover:ring-opacity-50 focus:outline-hidden focus:ring-2 focus:ring-opacity-50`}
                 onClick={() => handleColorSelect(c)}
               />
             ))}

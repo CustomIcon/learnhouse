@@ -19,47 +19,54 @@ class StatusEnum(str, Enum):
 
 
 class TrailRun(SQLModel, table=True):
+    __table_args__ = {"extend_existing": True}
     id: Optional[int] = Field(default=None, primary_key=True)
-    data: dict = Field(default={}, sa_column=Column(JSON))
+    data: dict = Field(default_factory=dict, sa_column=Column(JSON))
     status: StatusEnum = StatusEnum.STATUS_IN_PROGRESS
     # foreign keys
     trail_id: int = Field(
-        sa_column=Column(Integer, ForeignKey("trail.id", ondelete="CASCADE"))
+        sa_column=Column(Integer, ForeignKey("trail.id", ondelete="CASCADE"), index=True)
     )
     course_id: int = Field(
-        sa_column=Column(Integer, ForeignKey("course.id", ondelete="CASCADE"))
+        sa_column=Column(Integer, ForeignKey("course.id", ondelete="CASCADE"), index=True)
     )
     org_id: int = Field(
         sa_column=Column(Integer, ForeignKey("organization.id", ondelete="CASCADE"))
     )
     user_id: int = Field(
-        sa_column=Column(Integer, ForeignKey("user.id", ondelete="CASCADE"))
+        sa_column=Column(Integer, ForeignKey("user.id", ondelete="CASCADE"), index=True)
     )
     # timestamps
     creation_date: str
     update_date: str
 
 
-class TrailRunCreate(TrailRun):
-    pass
+class TrailRunCreate(SQLModel):
+    data: dict = Field(default_factory=dict)
+    status: StatusEnum = StatusEnum.STATUS_IN_PROGRESS
+    trail_id: int
+    course_id: int
+    org_id: int
+    user_id: int
+    creation_date: str
+    update_date: str
 
 
 # trick because Lists are not supported in SQLModel (runs: list[TrailStep] )
 class TrailRunRead(BaseModel):
-    id: Optional[int] = Field(default=None, primary_key=True)
-    data: dict = Field(default={}, sa_column=Column(JSON))
+    id: Optional[int] = None
+    data: dict = Field(default_factory=dict)
     status: StatusEnum = StatusEnum.STATUS_IN_PROGRESS
     # foreign keys
-    trail_id: int = Field(default=None, foreign_key="trail.id")
-    course_id: int = Field(default=None, foreign_key="course.id")
-    org_id: int = Field(default=None, foreign_key="organization.id")
-    user_id: int = Field(default=None, foreign_key="user.id")
+    trail_id: Optional[int] = None
+    course_id: Optional[int] = None
+    org_id: Optional[int] = None
+    user_id: Optional[int] = None
     # course object
-    course: Optional[dict]
+    course: Optional[dict] = None
     # timestamps
-    creation_date: Optional[str]
-    update_date: Optional[str]
+    creation_date: Optional[str] = None
+    update_date: Optional[str] = None
     # number of activities in course
-    course_total_steps: int
-    steps: list[TrailStep]
-    pass
+    course_total_steps: int = 0
+    steps: list[TrailStep] = Field(default_factory=list)

@@ -1,31 +1,62 @@
 'use client'
 import Link from 'next/link'
 import { getAPIUrl, getUriWithOrg } from '@services/config/config'
-import Canva from '@components/Objects/Activities/DynamicCanva/DynamicCanva'
-import VideoActivity from '@components/Objects/Activities/Video/Video'
-import { BookOpenCheck, Check, CheckCircle, MoreVertical, UserRoundPen } from 'lucide-react'
-import { markActivityAsComplete } from '@services/courses/activity'
-import DocumentPdfActivity from '@components/Objects/Activities/DocumentPdf/DocumentPdf'
-import ActivityIndicators from '@components/Pages/Courses/ActivityIndicators'
-import GeneralWrapperStyled from '@components/StyledElements/Wrappers/GeneralWrapper'
+import { BookOpenCheck, CheckCircle, ChevronLeft, ChevronRight, UserRoundPen, Edit2, Maximize2, Minimize2 } from 'lucide-react'
+import { markActivityAsComplete, unmarkActivityAsComplete } from '@services/courses/activity'
 import { usePathname, useRouter } from 'next/navigation'
 import AuthenticatedClientElement from '@components/Security/AuthenticatedClientElement'
-import { getCourseThumbnailMediaDirectory } from '@services/media/media'
-import { useOrg } from '@components/Contexts/OrgContext'
+import { getCourseThumbnailMediaDirectory, getUserAvatarMediaDirectory } from '@services/media/media'
+import { useOrg, useOrgMembership } from '@components/Contexts/OrgContext'
 import { CourseProvider } from '@components/Contexts/CourseContext'
-import AIActivityAsk from '@components/Objects/Activities/AI/AIActivityAsk'
-import AIChatBotProvider from '@components/Contexts/AI/AIChatBotContext'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
-import React, { useEffect } from 'react'
+import React, { useEffect, useRef, useMemo, lazy, Suspense } from 'react'
 import { getAssignmentFromActivityUUID, getFinalGrade, submitAssignmentForGrading } from '@services/courses/assignments'
-import AssignmentStudentActivity from '@components/Objects/Activities/Assignment/AssignmentStudentActivity'
 import { AssignmentProvider } from '@components/Contexts/Assignments/AssignmentContext'
 import { AssignmentsTaskProvider } from '@components/Contexts/Assignments/AssignmentsTaskContext'
-import AssignmentSubmissionProvider, {  useAssignmentSubmission } from '@components/Contexts/Assignments/AssignmentSubmissionContext'
+import AssignmentSubmissionProvider, { useAssignmentSubmission } from '@components/Contexts/Assignments/AssignmentSubmissionContext'
 import toast from 'react-hot-toast'
 import { mutate } from 'swr'
-import ConfirmationModal from '@components/StyledElements/ConfirmationModal/ConfirmationModal'
+import useSWR from 'swr'
+import { swrFetcher } from '@services/utils/ts/requests'
+import ConfirmationModal from '@components/Objects/StyledElements/ConfirmationModal/ConfirmationModal'
 import { useMediaQuery } from 'usehooks-ts'
+import PaidCourseActivityDisclaimer from '@components/Objects/Courses/CourseActions/PaidCourseActivityDisclaimer'
+import { useContributorStatus } from '../../../../../../../../hooks/useContributorStatus'
+import ToolTip from '@components/Objects/StyledElements/Tooltip/Tooltip'
+import ActivityChapterDropdown from '@components/Pages/Activity/ActivityChapterDropdown'
+import ActivityShareDropdown from '@components/Pages/Activity/ActivityShareDropdown'
+import FixedActivitySecondaryBar from '@components/Pages/Activity/FixedActivitySecondaryBar'
+import CourseEndView from '@components/Pages/Activity/CourseEndView'
+import { motion, AnimatePresence } from 'framer-motion'
+import { Breadcrumbs } from '@components/Objects/Breadcrumbs/Breadcrumbs'
+import { BookCopy } from 'lucide-react'
+import MiniInfoTooltip from '@components/Objects/MiniInfoTooltip'
+import GeneralWrapperStyled from '@components/Objects/StyledElements/Wrappers/GeneralWrapper'
+import ActivityIndicators from '@components/Pages/Courses/ActivityIndicators'
+import UserAvatar from '@components/Objects/UserAvatar'
+import { useTranslation } from 'react-i18next'
+import { useAnalytics } from '@/hooks/useAnalytics'
+
+// Lazy load heavy components
+const Canva = lazy(() => import('@components/Objects/Activities/DynamicCanva/DynamicCanva'))
+const VideoActivity = lazy(() => import('@components/Objects/Activities/Video/Video'))
+const DocumentPdfActivity = lazy(() => import('@components/Objects/Activities/DocumentPdf/DocumentPdf'))
+const AssignmentStudentActivity = lazy(() => import('@components/Objects/Activities/Assignment/AssignmentStudentActivity'))
+const AIActivityAsk = lazy(() => import('@components/Objects/Activities/AI/AIActivityAsk'))
+const AISidePanelContentWrapper = lazy(() => import('@components/Objects/Activities/AI/AIActivityAsk').then(mod => ({ default: mod.AISidePanelContentWrapper })))
+const AISidePanelInline = lazy(() => import('@components/Objects/Activities/AI/AIActivityAsk').then(mod => ({ default: mod.AISidePanelInline })))
+const AIChatBotProvider = lazy(() => import('@components/Contexts/AI/AIChatBotContext'))
+const ScormActivity = lazy(() => import('../../../../../../../../ee/components/Activities/ScormActivity'))
+
+// Loading fallback component
+const LoadingFallback = () => (
+  <div className="flex items-center justify-center h-64">
+    <div className="relative w-6 h-6">
+      <div className="absolute top-0 left-0 w-full h-full border-2 border-gray-100 rounded-full"></div>
+      <div className="absolute top-0 left-0 w-full h-full border-2 border-gray-400 rounded-full animate-spin border-t-transparent"></div>
+    </div>
+  </div>
+);
 
 interface ActivityClientProps {
   activityid: string
@@ -35,8 +66,116 @@ interface ActivityClientProps {
   course: any
 }
 
+interface ActivityActionsProps {
+  activity: any
+  activityid: string
+  course: any
+  orgslug: string
+  assignment: any
+  showNavigation?: boolean
+}
+
+// Custom hook for activity position
+function useActivityPosition(course: any, activityId: string) {
+  return useMemo(() => {
+    let allActivities: any[] = [];
+    let currentIndex = -1;
+    
+    course.chapters.forEach((chapter: any) => {
+      chapter.activities.forEach((activity: any) => {
+        const cleanActivityUuid = activity.activity_uuid?.replace('activity_', '');
+        allActivities.push({
+          ...activity,
+          cleanUuid: cleanActivityUuid,
+          chapterName: chapter.name
+        });
+        
+        if (cleanActivityUuid === activityId.replace('activity_', '')) {
+          currentIndex = allActivities.length - 1;
+        }
+      });
+    });
+    
+    return { allActivities, currentIndex };
+  }, [course, activityId]);
+}
+
+function ActivityActions({ activity, activityid, course, orgslug, assignment, showNavigation = true }: ActivityActionsProps) {
+  
+  const { t } = useTranslation();
+  const { contributorStatus } = useContributorStatus(course.course_uuid);
+  const org = useOrg() as any;
+  const session = useLHSession() as any;
+  const access_token = session?.data?.tokens?.access_token;
+
+  // Add SWR for trail data
+  const { data: trailData } = useSWR(
+    `${getAPIUrl()}trail/org/${org?.id}/trail`,
+    (url) => swrFetcher(url, access_token)
+  );
+
+
+  return (
+    <div className="flex space-x-2 items-center">
+      {activity && activity.published == true && activity.content.paid_access != false && (
+        <AuthenticatedClientElement checkMethod="authentication">
+          {activity.activity_type != 'TYPE_ASSIGNMENT' && (
+            <>
+              <MarkStatus
+                activity={activity}
+                activityid={activityid}
+                course={course}
+                orgslug={orgslug}
+                trailData={trailData}
+              />
+            </>
+          )}
+          {activity.activity_type == 'TYPE_ASSIGNMENT' && (
+            <>
+              <AssignmentSubmissionProvider assignment_uuid={assignment?.assignment_uuid}>
+                <AssignmentTools
+                  assignment={assignment}
+                  activity={activity}
+                  activityid={activityid}
+                  course={course}
+                  orgslug={orgslug}
+                />
+              </AssignmentSubmissionProvider>
+            </>
+          )}
+          {showNavigation && (
+            <NextActivityButton course={course} currentActivityId={activity.id} orgslug={orgslug} />
+          )}
+        </AuthenticatedClientElement>
+      )}
+    </div>
+  );
+}
+
 function ActivityClient(props: ActivityClientProps) {
+  const { t } = useTranslation()
   const activityid = props.activityid
+
+  function getRelativeTime(date: Date): string {
+    const now = new Date();
+    const diff = now.getTime() - date.getTime();
+    const seconds = Math.floor(diff / 1000);
+    const minutes = Math.floor(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    const days = Math.floor(hours / 24);
+    const weeks = Math.floor(days / 7);
+    const months = Math.floor(days / 30);
+    const years = Math.floor(days / 365);
+  
+    if (years > 0) return t('time.years_ago', { count: years });
+    if (months > 0) return t('time.months_ago', { count: months });
+    if (weeks > 0) return t('time.weeks_ago', { count: weeks });
+    if (days > 0) return t('time.days_ago', { count: days });
+    if (hours > 0) return t('time.hours_ago', { count: hours });
+    if (minutes > 0) return t('time.minutes_ago', { count: minutes });
+    return t('common.just_now');
+  }
+
   const courseuuid = props.courseuuid
   const orgslug = props.orgslug
   const activity = props.activity
@@ -48,7 +187,128 @@ function ActivityClient(props: ActivityClientProps) {
   const [bgColor, setBgColor] = React.useState('bg-white')
   const [assignment, setAssignment] = React.useState(null) as any;
   const [markStatusButtonActive, setMarkStatusButtonActive] = React.useState(false);
- 
+  const [isFocusMode, setIsFocusMode] = React.useState(false);
+  const isInitialRender = useRef(true);
+  const { contributorStatus } = useContributorStatus(courseuuid);
+  const router = useRouter();
+
+  const { track } = useAnalytics()
+  const activityStartTime = useRef(Date.now())
+
+  // Track activity view on mount, time_on_activity on unmount
+  useEffect(() => {
+    if (activity) {
+      activityStartTime.current = Date.now()
+      track('activity_view', {
+        activity_id: activityid,
+        course_id: String(course.id),
+        course_uuid: courseuuid,
+        activity_type: activity.activity_type,
+        activity_name: activity.name,
+      })
+    }
+    return () => {
+      if (activity) {
+        const seconds = Math.round((Date.now() - activityStartTime.current) / 1000)
+        if (seconds > 0) {
+          track('time_on_activity', {
+            activity_id: activityid,
+            course_id: String(course.id),
+            seconds_spent: seconds,
+          })
+        }
+      }
+    }
+  }, [activityid])
+
+  // Add SWR for trail data
+  const { data: trailData, error: error } = useSWR(
+    `${getAPIUrl()}trail/org/${org?.id}/trail`,
+    (url) => swrFetcher(url, access_token)
+  )
+
+  // Memoize activity position calculation
+  const { allActivities, currentIndex } = useActivityPosition(course, activityid);
+  
+  // Get previous and next activities
+  const prevActivity = currentIndex > 0 ? allActivities[currentIndex - 1] : null;
+  const nextActivity = currentIndex < allActivities.length - 1 ? allActivities[currentIndex + 1] : null;
+
+  // Memoize activity content
+  const activityContent = useMemo(() => {
+    if (!activity || !activity.published || activity.content.paid_access === false) {
+      return null;
+    }
+
+    switch (activity.activity_type) {
+      case 'TYPE_DYNAMIC':
+        return (
+          <Suspense fallback={<LoadingFallback />}>
+            <Canva content={activity.content} activity={activity} />
+          </Suspense>
+        );
+      case 'TYPE_VIDEO':
+        return (
+          <Suspense fallback={<LoadingFallback />}>
+            <VideoActivity course={course} activity={activity} />
+          </Suspense>
+        );
+      case 'TYPE_DOCUMENT':
+        return (
+          <Suspense fallback={<LoadingFallback />}>
+            <DocumentPdfActivity course={course} activity={activity} />
+          </Suspense>
+        );
+      case 'TYPE_ASSIGNMENT':
+        return assignment ? (
+          <Suspense fallback={<LoadingFallback />}>
+            <AssignmentProvider assignment_uuid={assignment?.assignment_uuid}>
+              <AssignmentsTaskProvider>
+                <AssignmentSubmissionProvider assignment_uuid={assignment?.assignment_uuid}>
+                  <AssignmentStudentActivity />
+                </AssignmentSubmissionProvider>
+              </AssignmentsTaskProvider>
+            </AssignmentProvider>
+          </Suspense>
+        ) : null;
+      case 'TYPE_SCORM':
+        return (
+          <Suspense fallback={<LoadingFallback />}>
+            <ScormActivity course={course} activity={activity} />
+          </Suspense>
+        );
+      default:
+        return null;
+    }
+  }, [activity, course, assignment]);
+
+  // Navigate to an activity
+  const navigateToActivity = (activity: any) => {
+    if (!activity) return;
+    
+    const cleanCourseUuid = course.course_uuid?.replace('course_', '');
+    router.push(getUriWithOrg(orgslug, '') + `/course/${cleanCourseUuid}/activity/${activity.cleanUuid}`);
+  };
+
+  // Initialize focus mode from localStorage
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('globalFocusMode');
+      setIsFocusMode(saved === 'true');
+    }
+  }, []);
+
+  // Save focus mode to localStorage
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('globalFocusMode', isFocusMode.toString());
+      // Dispatch custom event for focus mode change
+      window.dispatchEvent(new CustomEvent('focusModeChange', { 
+        detail: { isFocusMode } 
+      }));
+      isInitialRender.current = false;
+    }
+  }, [isFocusMode]);
 
   function getChapterNameByActivityId(course: any, activity_id: any) {
     for (let i = 0; i < course.chapters.length; i++) {
@@ -56,7 +316,7 @@ function ActivityClient(props: ActivityClientProps) {
       for (let j = 0; j < chapter.activities.length; j++) {
         let activity = chapter.activities[j]
         if (activity.id === activity_id) {
-          return chapter.name
+          return `${t('courses.chapter')} ${i + 1} : ${chapter.name}`
         }
       }
     }
@@ -69,149 +329,516 @@ function ActivityClient(props: ActivityClientProps) {
   }
 
   useEffect(() => {
-    if (activity.activity_type == 'TYPE_DYNAMIC') {
-      setBgColor('bg-white nice-shadow');
+    if (activity.activity_type == 'TYPE_DYNAMIC' || activity.activity_type == 'TYPE_SCORM') {
+      setBgColor(isFocusMode ? 'bg-white' : 'bg-white nice-shadow');
     }
     else if (activity.activity_type == 'TYPE_ASSIGNMENT') {
       setMarkStatusButtonActive(false);
-      setBgColor('bg-white nice-shadow');
+      setBgColor(isFocusMode ? 'bg-white' : 'bg-white nice-shadow');
       getAssignmentUI();
     }
     else {
-      setBgColor('bg-zinc-950');
+      setBgColor(isFocusMode ? 'bg-zinc-950' : 'bg-zinc-950 nice-shadow');
     }
   }
-    , [activity, pathname])
+    , [activity, pathname, isFocusMode])
 
   return (
     <>
       <CourseProvider courseuuid={course?.course_uuid}>
-        <AIChatBotProvider>
-          <GeneralWrapperStyled>
-            <div className="space-y-4 pt-4">
-              <div className="flex space-x-6">
-                <div className="flex">
-                  <Link
-                    href={getUriWithOrg(orgslug, '') + `/course/${courseuuid}`}
+        <Suspense fallback={<LoadingFallback />}>
+          <AIChatBotProvider>
+            <Suspense fallback={null}>
+              <AISidePanelContentWrapper>
+            {isFocusMode ? (
+              <AnimatePresence>
+                <motion.div
+                  initial={isInitialRender.current ? false : { opacity: 0 }}
+                  animate={{ opacity: 1 }}
+                  exit={{ opacity: 0 }}
+                  transition={{ duration: 0.3 }}
+                  className="fixed inset-0 bg-white"
+                  style={{ zIndex: 'var(--z-overlay)' }}
+                >
+                  {/* Focus Mode Top Bar */}
+                  <motion.div 
+                    initial={isInitialRender.current ? false : { y: -100 }}
+                    animate={{ y: 0 }}
+                    exit={{ y: -100 }}
+                    transition={{ duration: 0.3 }}
+                    className="fixed top-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-b border-gray-100"
+                    style={{ zIndex: 'var(--z-modal-content)' }}
                   >
-                    <img
-                      className="w-[100px] h-[57px] rounded-md drop-shadow-md"
-                      src={`${getCourseThumbnailMediaDirectory(
-                        org?.org_uuid,
-                        course.course_uuid,
-                        course.thumbnail_image
-                      )}`}
-                      alt=""
-                    />
-                  </Link>
-                </div>
-                <div className="flex flex-col -space-y-1">
-                  <p className="font-bold text-gray-700 text-md">Course </p>
-                  <h1 className="font-bold text-gray-950 text-2xl first-letter:uppercase">
-                    {course.name}
-                  </h1>
-                </div>
-              </div>
-              <ActivityIndicators
-                course_uuid={courseuuid}
-                current_activity={activityid}
-                orgslug={orgslug}
-                course={course}
-              />
+                    <div className="container mx-auto px-4 py-2">
+                      <div className="flex items-center justify-between h-14">
+                        {/* Progress Indicator - Moved to left */}
+                        <motion.div 
+                          initial={isInitialRender.current ? false : { opacity: 0, x: -20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: 0.2 }}
+                          className="flex items-center space-x-2"
+                        >
+                          <div className="relative w-8 h-8">
+                            <svg className="w-full h-full transform -rotate-90">
+                              <circle
+                                cx="16"
+                                cy="16"
+                                r="14"
+                                stroke="#e5e7eb"
+                                strokeWidth="3"
+                                fill="none"
+                              />
+                              <circle
+                                cx="16"
+                                cy="16"
+                                r="14"
+                                stroke="#10b981"
+                                strokeWidth="3"
+                                fill="none"
+                                strokeLinecap="round"
+                                strokeDasharray={2 * Math.PI * 14}
+                                strokeDashoffset={2 * Math.PI * 14 * (1 - (trailData?.runs?.find((run: any) => run.course_uuid === course.course_uuid)?.steps?.filter((step: any) => step.complete)?.length || 0) / (course.chapters?.reduce((acc: number, chapter: any) => acc + chapter.activities.length, 0) || 1))}
+                              />
+                            </svg>
+                            <div className="absolute inset-0 flex items-center justify-center">
+                              <span className="text-xs font-bold text-gray-800">
+                                {Math.round(((trailData?.runs?.find((run: any) => run.course_uuid === course.course_uuid)?.steps?.filter((step: any) => step.complete)?.length || 0) / (course.chapters?.reduce((acc: number, chapter: any) => acc + chapter.activities.length, 0) || 1)) * 100)}%
+                              </span>
+                            </div>
+                          </div>
+                          <div className="text-xs text-gray-600">
+                            {trailData?.runs?.find((run: any) => run.course_uuid === course.course_uuid)?.steps?.filter((step: any) => step.complete)?.length || 0} {t('common.of')} {course.chapters?.reduce((acc: number, chapter: any) => acc + chapter.activities.length, 0) || 0}
+                          </div>
+                        </motion.div>
+                        
+                        {/* Center Course Info */}
+                        <motion.div 
+                          initial={isInitialRender.current ? false : { opacity: 0, y: -20 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ delay: 0.1 }}
+                          className="flex items-center space-x-4"
+                        >
+                          <div className="flex">
+                            <Link
+                              href={getUriWithOrg(orgslug, '') + `/course/${courseuuid}`}
+                            >
+                              <img
+                                className="w-[60px] h-[34px] rounded-md drop-shadow-md"
+                                src={course.thumbnail_image
+                                  ? getCourseThumbnailMediaDirectory(
+                                      org?.org_uuid,
+                                      course.course_uuid,
+                                      course.thumbnail_image
+                                    )
+                                  : '/empty_thumbnail.png'
+                                }
+                                alt=""
+                              />
+                            </Link>
+                          </div>
+                          <div className="flex flex-col -space-y-1">
+                            <p className="font-bold text-gray-700 text-sm">{t('search.course')} </p>
+                            <h1 className="font-bold text-gray-950 text-lg first-letter:uppercase">
+                              {course.name}
+                            </h1>
+                          </div>
+                        </motion.div>
 
-              <div className="flex justify-between items-center">
-                <div className="flex flex-col -space-y-1">
-                  <p className="font-bold text-gray-700 text-md">
-                    Chapter : {getChapterNameByActivityId(course, activity.id)}
-                  </p>
-                  <h1 className="font-bold text-gray-950 text-2xl first-letter:uppercase">
-                    {activity.name}
-                  </h1>
-                </div>
-                <div className="flex space-x-1 items-center">
-                  {activity && activity.published == true && (
-                    <AuthenticatedClientElement checkMethod="authentication">
-                      {activity.activity_type != 'TYPE_ASSIGNMENT' &&
-                        <>
-                          <AIActivityAsk activity={activity} />
-                          <MoreVertical size={17} className="text-gray-300 " />
-                          <MarkStatus
-                            activity={activity}
-                            activityid={activityid}
-                            course={course}
+                        {/* Minimize and Chapters - Moved to right */}
+                        <motion.div
+                          initial={isInitialRender.current ? false : { opacity: 0, x: 20 }}
+                          animate={{ opacity: 1, x: 0 }}
+                          transition={{ delay: 0.2 }}
+                          className="flex items-center space-x-2"
+                        >
+                          <ActivityShareDropdown
+                            activityName={activity.name}
+                            activityUrl={typeof window !== 'undefined' ? window.location.href : ''}
                             orgslug={orgslug}
+                            courseUuid={course.course_uuid}
+                            activityId={activity.activity_uuid ? activity.activity_uuid.replace('activity_', '') : activityid.replace('activity_', '')}
+                            activityType={activity.activity_type}
                           />
-                        </>
-                      }
-                      {activity.activity_type == 'TYPE_ASSIGNMENT' &&
+                          <ActivityChapterDropdown
+                            course={course}
+                            currentActivityId={activity.activity_uuid ? activity.activity_uuid.replace('activity_', '') : activityid.replace('activity_', '')}
+                            orgslug={orgslug}
+                            trailData={trailData}
+                          />
+                          <motion.button
+                            whileHover={{ scale: 1.05 }}
+                            whileTap={{ scale: 0.95 }}
+                            onClick={() => setIsFocusMode(false)}
+                            className="bg-white nice-shadow p-2 rounded-full cursor-pointer hover:bg-gray-50"
+                            title={t('activities.exit_focus_mode')}
+                          >
+                            <Minimize2 size={16} className="text-gray-700" />
+                          </motion.button>
+                        </motion.div>
+                      </div>
+                    </div>
+                  </motion.div>
+
+                  {/* Focus Mode Content */}
+                  <div className="pt-16 pb-20 h-full overflow-auto">
+                    <div className="container mx-auto px-4">
+                      {activity && activity.published == true && (
                         <>
-                          <MoreVertical size={17} className="text-gray-300 " />
-                          <AssignmentSubmissionProvider assignment_uuid={assignment?.assignment_uuid}>
-                            <AssignmentTools
-                              assignment={assignment}
+                          {activity.content.paid_access == false ? (
+                            <PaidCourseActivityDisclaimer course={course} />
+                          ) : (
+                            <motion.div
+                              initial={isInitialRender.current ? false : { scale: 0.95, opacity: 0 }}
+                              animate={{ scale: 1, opacity: 1 }}
+                              transition={{ delay: 0.3 }}
+                              className={`${activity.activity_type === 'TYPE_SCORM' ? 'rounded-xl overflow-hidden' : 'p-7 rounded-lg'} ${bgColor} mt-4`}
+                            >
+                              {/* Activity Types */}
+                              <div className={activity.activity_type === 'TYPE_SCORM' ? 'overflow-hidden' : ''}>
+                                {activityContent}
+                              </div>
+                            </motion.div>
+                          )}
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Focus Mode Bottom Bar */}
+                  {activity && activity.published == true && activity.content.paid_access != false && (
+                    <motion.div 
+                      initial={isInitialRender.current ? false : { y: 100 }}
+                      animate={{ y: 0 }}
+                      exit={{ y: 100 }}
+                      transition={{ duration: 0.3 }}
+                      className="fixed bottom-0 left-0 right-0 bg-white/90 backdrop-blur-xl border-t border-gray-100"
+                      style={{ zIndex: 'var(--z-modal-content)' }}
+                    >
+                      <div className="container mx-auto px-4">
+                        <div className="flex items-center justify-between h-16">
+                          <div className="flex items-center space-x-2">
+                            <button
+                              onClick={() => navigateToActivity(prevActivity)}
+                              className={`flex items-center space-x-1.5 p-2 rounded-md transition-all duration-200 cursor-pointer ${
+                                prevActivity
+                                  ? 'text-gray-700'
+                                  : 'opacity-50 text-gray-400 cursor-not-allowed'
+                              }`}
+                              disabled={!prevActivity}
+                              title={prevActivity ? `${t('common.previous')}: ${prevActivity.name}` : t('activities.no_previous_activity')}
+                            >
+                              <ChevronLeft size={20} className="text-gray-800 shrink-0" />
+                              <div className="flex flex-col items-start">
+                                <span className="text-xs text-gray-500">{t('common.previous')}</span>
+                                <span className="text-sm capitalize font-semibold text-left">
+                                  {prevActivity ? prevActivity.name : t('activities.no_previous_activity')}
+                                </span>
+                              </div>
+                            </button>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <ActivityActions
                               activity={activity}
                               activityid={activityid}
                               course={course}
                               orgslug={orgslug}
+                              assignment={assignment}
+                              showNavigation={false}
                             />
-                          </AssignmentSubmissionProvider>
-                        </>
-                      }
-
-                    </AuthenticatedClientElement>
-                  )}
-                </div>
-              </div>
-              {activity && activity.published == false && (
-                <div className="p-7 drop-shadow-sm rounded-lg bg-gray-800">
-                  <div className="text-white">
-                    <h1 className="font-bold text-2xl">
-                      This activity is not published yet
-                    </h1>
-                  </div>
-                </div>
-              )}
-
-              {activity && activity.published == true && (
-                <div
-                  className={`p-7 drop-shadow-sm rounded-lg ${bgColor}`}
-                >
-                  <div>
-                    {activity.activity_type == 'TYPE_DYNAMIC' && (
-                      <Canva content={activity.content} activity={activity} />
-                    )}
-                    {/* todo : use apis & streams instead of this */}
-                    {activity.activity_type == 'TYPE_VIDEO' && (
-                      <VideoActivity course={course} activity={activity} />
-                    )}
-                    {activity.activity_type == 'TYPE_DOCUMENT' && (
-                      <DocumentPdfActivity
-                        course={course}
-                        activity={activity}
-                      />
-                    )}
-                    {activity.activity_type == 'TYPE_ASSIGNMENT' && (
-                      <div>
-                        {assignment ? (
-                          <AssignmentProvider assignment_uuid={assignment?.assignment_uuid}>
-                            <AssignmentsTaskProvider>
-                              <AssignmentSubmissionProvider assignment_uuid={assignment?.assignment_uuid}>
-                                <AssignmentStudentActivity />
-                              </AssignmentSubmissionProvider>
-                            </AssignmentsTaskProvider>
-                          </AssignmentProvider>
-                        ) : (
-                          <div></div>
-                        )}
+                            <button
+                              onClick={() => navigateToActivity(nextActivity)}
+                              className={`flex items-center space-x-1.5 p-2 rounded-md transition-all duration-200 cursor-pointer ${
+                                nextActivity
+                                  ? 'text-gray-700'
+                                  : 'opacity-50 text-gray-400 cursor-not-allowed'
+                              }`}
+                              disabled={!nextActivity}
+                              title={nextActivity ? `${t('common.next')}: ${nextActivity.name}` : t('activities.no_next_activity')}
+                            >
+                              <div className="flex flex-col items-end">
+                                <span className="text-xs text-gray-500">{t('common.next')}</span>
+                                <span className="text-sm capitalize font-semibold text-right">
+                                  {nextActivity ? nextActivity.name : t('activities.no_next_activity')}
+                                </span>
+                              </div>
+                              <ChevronRight size={20} className="text-gray-800 shrink-0" />
+                            </button>
+                          </div>
+                        </div>
                       </div>
-                    )}
-                  </div>
-                </div>
-              )}
-              {<div style={{ height: '100px' }}></div>}
-            </div>
-          </GeneralWrapperStyled>
-        </AIChatBotProvider>
+                    </motion.div>
+                  )}
+                </motion.div>
+              </AnimatePresence>
+            ) : (
+              <GeneralWrapperStyled>
+                {/* Original non-focus mode UI */}
+                {activityid === 'end' ? (
+                  <CourseEndView 
+                    courseName={course.name}
+                    orgslug={orgslug}
+                    courseUuid={course.course_uuid}
+                    thumbnailImage={course.thumbnail_image}
+                    course={course}
+                    trailData={trailData}
+                  />
+                ) : (
+                  <div className="space-y-4 pt-0 relative">
+                    <div className="pt-2 pb-6">
+                      <Breadcrumbs items={[
+                        { label: t('courses.courses'), href: getUriWithOrg(orgslug, '/courses'), icon: <BookCopy size={14} /> },
+                        { label: course.name, href: getUriWithOrg(orgslug, `/course/${courseuuid}`) },
+                        { label: activity.name }
+                      ]} />
+                    </div>
+                    <div className="space-y-4 activity-info-section relative" style={{ zIndex: 'var(--z-content)' }}>
+                        <div className="flex justify-between items-center">
+                          <div className="flex space-x-6">
+                            <div className="flex">
+                              <Link
+                                href={getUriWithOrg(orgslug, '') + `/course/${courseuuid}`}
+                              >
+                                <img
+                                  className="w-[100px] h-[57px] rounded-md drop-shadow-md"
+                                  src={course.thumbnail_image
+                                    ? getCourseThumbnailMediaDirectory(
+                                        org?.org_uuid,
+                                        course.course_uuid,
+                                        course.thumbnail_image
+                                      )
+                                    : '/empty_thumbnail.png'
+                                  }
+                                  alt=""
+                                />
+                              </Link>
+                            </div>
+                            <div className="flex flex-col -space-y-1">
+                              <p className="font-bold text-gray-700 text-md">{t('search.course')} </p>
+                              <h1 className="font-bold text-gray-950 text-3xl first-letter:uppercase">
+                                {course.name}
+                              </h1>
+                            </div>
+                          </div>
+                          <ActivityShareDropdown
+                            activityName={activity.name}
+                            activityUrl={typeof window !== 'undefined' ? window.location.href : ''}
+                            orgslug={orgslug}
+                            courseUuid={course.course_uuid}
+                            activityId={activity.activity_uuid ? activity.activity_uuid.replace('activity_', '') : activityid.replace('activity_', '')}
+                            activityType={activity.activity_type}
+                          />
+                        </div>
+
+                        <ActivityIndicators
+                          course_uuid={courseuuid}
+                          current_activity={activityid}
+                          orgslug={orgslug}
+                          course={course}
+                          enableNavigation={true}
+                          trailData={trailData}
+                        />
+
+                        <div className="flex justify-between items-center w-full">
+                          <div className="flex flex-1/3 items-center space-x-3">
+                            <div className="flex flex-col -space-y-1">
+                              <p className="font-bold text-gray-700 text-md">
+                                {getChapterNameByActivityId(course, activity.id)}
+                              </p>
+                              <h1 className="font-bold text-gray-950 text-2xl first-letter:uppercase">
+                                {activity.name}
+                              </h1>
+                              {/* Authors and Dates Section */}
+                              <div className="flex flex-wrap items-center gap-3 mt-2">
+                                {/* Avatars */}
+                                {course.authors && course.authors.length > 0 && (
+                                  <div className="flex -space-x-3">
+                                    {course.authors.filter((a: any) => a.authorship_status === 'ACTIVE').slice(0, 3).map((author: any, idx: number) => (
+                                      <div key={author.user.user_uuid} className="relative" style={{ zIndex: 10 - idx }}>
+                                        <UserAvatar
+                                          border="border-2"
+                                          rounded="rounded-full"
+                                          avatar_url={author.user.avatar_image ? getUserAvatarMediaDirectory(author.user.user_uuid, author.user.avatar_image) : ''}
+                                          predefined_avatar={author.user.avatar_image ? undefined : 'empty'}
+                                          width={26}
+                                          showProfilePopup={true}
+                                          userId={author.user.id}
+                                        />
+                                      </div>
+                                    ))}
+                                    {course.authors.filter((a: any) => a.authorship_status === 'ACTIVE').length > 3 && (
+                                      <div className="flex items-center justify-center bg-neutral-100 text-neutral-600 font-medium rounded-full border-2 border-white shadow-sm w-9 h-9 text-xs z-0">
+                                        +{course.authors.filter((a: any) => a.authorship_status === 'ACTIVE').length - 3}
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                                {/* Author names */}
+                                {course.authors && course.authors.length > 0 && (
+                                  <div className="text-xs text-gray-700 font-medium flex items-center gap-1">
+                                    {course.authors.filter((a: any) => a.authorship_status === 'ACTIVE').length > 1 && (
+                                      <span>{t('courses.co_created_by')} </span>
+                                    )}
+                                    {course.authors.filter((a: any) => a.authorship_status === 'ACTIVE').slice(0, 2).map((author: any, idx: number, arr: any[]) => (
+                                      <span key={author.user.user_uuid}>
+                                        {author.user.first_name && author.user.last_name
+                                          ? `${author.user.first_name} ${author.user.last_name}`
+                                          : `@${author.user.username}`}
+                                        {idx === 0 && arr.length > 1 ? ' & ' : ''}
+                                      </span>
+                                    ))}
+                                    {course.authors.filter((a: any) => a.authorship_status === 'ACTIVE').length > 2 && (
+                                      <ToolTip
+                                        content={
+                                          <div className="p-2">
+                                            {course.authors
+                                              .filter((a: any) => a.authorship_status === 'ACTIVE')
+                                              .slice(2)
+                                              .map((author: any) => (
+                                                <div key={author.user.user_uuid} className="text-white text-sm py-1">
+                                                  {author.user.first_name && author.user.last_name
+                                                    ? `${author.user.first_name} ${author.user.last_name}`
+                                                    : `@${author.user.username}`}
+                                                </div>
+                                              ))}
+                                          </div>
+                                        }
+                                      >
+                                        <div className="bg-gray-100 hover:bg-gray-200 text-gray-600 px-2 py-0.5 rounded-md cursor-pointer text-xs font-medium transition-colors duration-200">
+                                          +{course.authors.filter((a: any) => a.authorship_status === 'ACTIVE').length - 2}
+                                        </div>
+                                      </ToolTip>
+                                    )}
+                                  </div>
+                                )}
+                                {/* Dates */}
+                                <div className="flex items-center text-xs text-gray-500 gap-2">
+                                  <span>
+                                    {t('courses.created_on')} {new Date(course.creation_date).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })}
+                                  </span>
+                                  <span className="mx-1">•</span>
+                                  <span>
+                                    {t('courses.last_updated')} {getRelativeTime(new Date(course.updated_at || course.last_updated || course.creation_date))}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex space-x-2 items-center relative" style={{ zIndex: 'var(--z-interactive)' }}>
+                            {activity && activity.published == true && activity.content.paid_access != false && (
+                              <AuthenticatedClientElement checkMethod="authentication">
+                                {activity.activity_type != 'TYPE_ASSIGNMENT' && (
+                                  <>
+                                    <AIActivityAsk activity={activity} />
+                                    <ActivityChapterDropdown
+                                      course={course}
+                                      currentActivityId={activity.activity_uuid ? activity.activity_uuid.replace('activity_', '') : activityid.replace('activity_', '')}
+                                      orgslug={orgslug}
+                                      trailData={trailData}
+                                    />
+                                    {contributorStatus === 'ACTIVE' && activity.activity_type == 'TYPE_DYNAMIC' && (
+                                      <Link
+                                        href={getUriWithOrg(orgslug, '') + `/course/${courseuuid}/activity/${activityid}/edit`}
+                                        className="bg-emerald-600 rounded-full px-5 drop-shadow-md flex items-center space-x-2 p-2.5 text-white hover:cursor-pointer transition delay-150 duration-300 ease-in-out"
+                                      >
+                                        <Edit2 size={17} />
+                                        <span className="text-xs font-bold">{t('courses.contribute')}</span>
+                                      </Link>
+                                    )}
+                                  </>
+                                )}
+                              </AuthenticatedClientElement>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {activity && activity.published == false && (
+                        <div className="p-7 drop-shadow-xs rounded-lg bg-gray-800">
+                          <div className="text-white">
+                            <h1 className="font-bold text-2xl">
+                              {t('activities.not_published_yet')}
+                            </h1>
+                          </div>
+                        </div>
+                      )}
+
+                      {activity && activity.published == true && (
+                        <>
+                          {activity.content.paid_access == false ? (
+                            <PaidCourseActivityDisclaimer course={course} />
+                          ) : (
+                            <div className="flex gap-6">
+                              <div className={`flex-1 min-w-0 ${activity.activity_type === 'TYPE_SCORM' ? 'rounded-xl overflow-hidden' : 'p-7 drop-shadow-xs rounded-lg'} ${bgColor} relative isolate`} style={{ zIndex: 'var(--z-base)' }}>
+                                <button
+                                  onClick={() => setIsFocusMode(true)}
+                                  className={`absolute ${activity.activity_type === 'TYPE_SCORM' ? 'top-2 right-2' : 'top-4 right-4'} bg-white/80 hover:bg-white nice-shadow p-2 rounded-full cursor-pointer transition-all duration-200 group overflow-hidden pointer-events-auto`}
+                                  style={{ zIndex: 'var(--z-interactive)' }}
+                                  title={t('activities.focus_mode')}
+                                >
+                                  <div className="flex items-center">
+                                    <Maximize2 size={16} className="text-gray-700" />
+                                    <span className="text-xs font-bold text-gray-700 opacity-0 group-hover:opacity-100 transition-all duration-200 w-0 group-hover:w-auto group-hover:ml-2 whitespace-nowrap">
+                                      {t('activities.focus_mode')}
+                                    </span>
+                                  </div>
+                                </button>
+                                {activityContent}
+                              </div>
+                              <Suspense fallback={null}>
+                                <AISidePanelInline activity={activity} />
+                              </Suspense>
+                            </div>
+                          )}
+                        </>
+                      )}
+
+                      {/* Activity Actions below the content box */}
+                      {activity && activity.published == true && activity.content.paid_access != false && (
+                        <div className="flex justify-between items-center mt-4 w-full">
+                          <div>
+                            <PreviousActivityButton 
+                              course={course} 
+                              currentActivityId={activity.id} 
+                              orgslug={orgslug} 
+                            />
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <ActivityActions 
+                              activity={activity}
+                              activityid={activityid}
+                              course={course}
+                              orgslug={orgslug}
+                              assignment={assignment}
+                              showNavigation={false}
+                            />
+                            <NextActivityButton 
+                              course={course} 
+                              currentActivityId={activity.id} 
+                              orgslug={orgslug} 
+                            />
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Fixed Activity Secondary Bar */}
+                      {activity && activity.published == true && activity.content.paid_access != false && (
+                        <FixedActivitySecondaryBar
+                          course={course}
+                          currentActivityId={activityid}
+                          orgslug={orgslug}
+                          activity={activity}
+                        />
+                      )}
+                      
+                      <div style={{ height: '100px' }}></div>
+                    </div>
+                )}
+              </GeneralWrapperStyled>
+            )}
+              </AISidePanelContentWrapper>
+            </Suspense>
+          </AIChatBotProvider>
+        </Suspense>
       </CourseProvider>
     </>
   )
@@ -221,55 +848,369 @@ export function MarkStatus(props: {
   activity: any
   activityid: string
   course: any
-  orgslug: string
+  orgslug: string,
+  trailData: any
 }) {
+  const { t } = useTranslation()
   const router = useRouter()
   const session = useLHSession() as any;
+  const org = useOrg() as any;
+  const { isUserPartOfTheOrg } = useOrgMembership();
   const isMobile = useMediaQuery('(max-width: 768px)')
+  const [isLoading, setIsLoading] = React.useState(false);
+  const [showMarkedTooltip, setShowMarkedTooltip] = React.useState(false);
+  const [showUnmarkedTooltip, setShowUnmarkedTooltip] = React.useState(false);
+
+
+  React.useEffect(() => {
+    if (typeof window !== 'undefined') {
+      const markedTooltipCount = localStorage.getItem('activity_marked_tooltip_count');
+      const unmarkedTooltipCount = localStorage.getItem('activity_unmarked_tooltip_count');
+      
+      if (!markedTooltipCount || parseInt(markedTooltipCount) < 3) {
+        setShowMarkedTooltip(true);
+      }
+      if (!unmarkedTooltipCount || parseInt(unmarkedTooltipCount) < 3) {
+        setShowUnmarkedTooltip(true);
+      }
+    }
+  }, []);
+
+  const handleMarkedTooltipClose = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('activity_marked_tooltip_count', '3');
+      setShowMarkedTooltip(false);
+    }
+  };
+
+  const handleUnmarkedTooltipClose = () => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('activity_unmarked_tooltip_count', '3');
+      setShowUnmarkedTooltip(false);
+    }
+  };
+
+  const infoIcon = (
+    <svg 
+      viewBox="0 0 24 24" 
+      fill="none" 
+      stroke="currentColor" 
+      strokeWidth="2" 
+      strokeLinecap="round" 
+      strokeLinejoin="round"
+    >
+      <circle cx="12" cy="12" r="10" />
+      <path d="M12 16v-4" />
+      <path d="M12 8h.01" />
+    </svg>
+  );
+
+  const areAllActivitiesCompleted = () => {
+    const run = props.trailData?.runs?.find(
+      (run: any) => run.course_uuid === props.course.course_uuid
+    );
+    if (!run) return false;
+
+    let totalActivities = 0;
+    let completedActivities = 0;
+
+    props.course.chapters.forEach((chapter: any) => {
+      chapter.activities.forEach((activity: any) => {
+        totalActivities++;
+        const isCompleted = run.steps.find(
+          (step: any) => step.activity_uuid === activity.activity_uuid && step.complete === true
+        );
+        if (isCompleted) {
+          completedActivities++;
+        }
+      });
+    });
+
+    return completedActivities >= totalActivities - 1;
+  };
+
   async function markActivityAsCompleteFront() {
-    const trail = await markActivityAsComplete(
-      props.orgslug,
-      props.course.course_uuid,
-      'activity_' + props.activityid,
-      session.data?.tokens?.access_token
-    )
-    router.refresh()
+    try {
+      const willCompleteAll = areAllActivitiesCompleted();
+      setIsLoading(true);
+      
+      await markActivityAsComplete(
+        props.orgslug,
+        props.course.course_uuid,
+        props.activity.activity_uuid,
+        session.data?.tokens?.access_token
+      );
+
+      await mutate(`${getAPIUrl()}trail/org/${org?.id}/trail`);
+      
+      if (willCompleteAll) {
+        const cleanCourseUuid = props.course.course_uuid.replace('course_', '');
+        router.push(getUriWithOrg(props.orgslug, '') + `/course/${cleanCourseUuid}/activity/end`);
+      }
+    } catch (error) {
+      console.error('Error marking activity as complete:', error);
+      toast.error(t('activities.failed_mark_complete'));
+    } finally {
+      setIsLoading(false);
+    }
+  }
+
+  async function unmarkActivityAsCompleteFront() {
+    try {
+      setIsLoading(true);
+      
+      await unmarkActivityAsComplete(
+        props.orgslug,
+        props.course.course_uuid,
+        props.activity.activity_uuid,
+        session.data?.tokens?.access_token
+      );
+
+      await mutate(`${getAPIUrl()}trail/org/${org?.id}/trail`);
+    } catch (error) {
+      toast.error(t('activities.failed_unmark_complete'));
+    } finally {
+      setIsLoading(false);
+    }
   }
 
   const isActivityCompleted = () => {
-    let run = props.course.trail.runs.find(
-      (run: any) => run.course_id == props.course.id
-    )
+    // Clean up course UUID by removing 'course_' prefix if it exists
+    const cleanCourseUuid = props.course.course_uuid?.replace('course_', '');
+    
+    let run = props.trailData?.runs?.find(
+      (run: any) => {
+        const cleanRunCourseUuid = run.course?.course_uuid?.replace('course_', '');
+        return cleanRunCourseUuid === cleanCourseUuid;
+      }
+    );
+
     if (run) {
+      // Find the step that matches the current activity
       return run.steps.find(
-        (step: any) => (step.activity_id == props.activity.id) && (step.complete == true)
-      )
+        (step: any) => step.activity_id === props.activity.id && step.complete === true
+      );
     }
+    return false;
+  }
+
+  // Don't render until we have trail data
+  if (!props.trailData) {
+    return null;
+  }
+
+  // Don't show progress tracking for non-members
+  if (!isUserPartOfTheOrg) {
+    return null;
   }
 
   return (
     <>
       {isActivityCompleted() ? (
-        <div className="bg-teal-600 rounded-full px-5 drop-shadow-md flex items-center space-x-2  p-2.5  text-white hover:cursor-pointer transition delay-150 duration-300 ease-in-out">
-          <i>
-            <Check size={17}></Check>
-          </i>{' '}
-          <i className="not-italic text-xs font-bold">Complete</i>
+        <div className="flex items-center space-x-2">
+          <div className="relative">
+            <ConfirmationModal
+              confirmationButtonText={t('activities.unmark_activity')}
+              confirmationMessage={t('activities.unmark_activity_confirm')}
+              dialogTitle={t('activities.unmark_activity_title')}
+              dialogTrigger={
+                <div className="bg-teal-600 rounded-md px-4 nice-shadow flex flex-col p-2.5 text-white hover:cursor-pointer transition delay-150 duration-300 ease-in-out">
+                  <span className="text-[10px] font-bold mb-1 uppercase">{t('common.status')}</span>
+                  <div className="flex items-center space-x-2">
+                    <svg 
+                      width="17" 
+                      height="17" 
+                      viewBox="0 0 24 24" 
+                      fill="none" 
+                      stroke="currentColor" 
+                      strokeWidth="2" 
+                      strokeLinecap="round" 
+                      strokeLinejoin="round"
+                    >
+                      <rect x="3" y="3" width="18" height="18" rx="2" />
+                      <path d="M7 12l3 3 7-7" />
+                    </svg>
+                    <span className="text-xs font-bold">{t('common.complete')}</span>
+                  </div>
+                </div>
+              }
+              functionToExecute={unmarkActivityAsCompleteFront}
+              status="warning"
+            />
+            {showMarkedTooltip && (
+              <MiniInfoTooltip
+                icon={infoIcon}
+                message={t('activities.unmark_tooltip')}
+                onClose={handleMarkedTooltipClose}
+                iconColor="text-teal-600"
+                iconSize={24}
+                width="w-64"
+              />
+            )}
+          </div>
         </div>
       ) : (
-        <div
-          className="bg-gray-800 rounded-full px-5 drop-shadow-md flex  items-center space-x-2 p-2.5  text-white hover:cursor-pointer transition delay-150 duration-300 ease-in-out"
-          onClick={markActivityAsCompleteFront}
-        >
-          {' '}
-          <i>
-            <Check size={17}></Check>
-          </i>{' '}
-          {!isMobile && <i className="not-italic text-xs font-bold">Mark as complete</i>}
+        <div className="flex items-center space-x-2">
+          <div className="relative">
+            <div
+              className={`${isLoading ? 'opacity-90' : ''} bg-gray-800 rounded-md px-4 nice-shadow flex flex-col p-2.5 text-white hover:cursor-pointer transition-all duration-200 ${isLoading ? 'cursor-not-allowed' : 'hover:bg-gray-700'}`}
+              onClick={!isLoading ? markActivityAsCompleteFront : undefined}
+            >
+              <span className="text-[10px] font-bold mb-1 uppercase">{t('common.status')}</span>
+              <div className="flex items-center space-x-2">
+                {isLoading ? (
+                  <div className="animate-spin">
+                    <svg 
+                      width="17" 
+                      height="17" 
+                      viewBox="0 0 24 24" 
+                      fill="none" 
+                      stroke="currentColor" 
+                      strokeWidth="2" 
+                      strokeLinecap="round" 
+                      strokeLinejoin="round"
+                    >
+                      <path d="M21 12a9 9 0 11-6.219-8.56" />
+                    </svg>
+                  </div>
+                ) : (
+                  <svg 
+                    width="17" 
+                    height="17" 
+                    viewBox="0 0 24 24" 
+                    fill="none" 
+                    stroke="currentColor" 
+                    strokeWidth="2" 
+                    strokeLinecap="round" 
+                    strokeLinejoin="round"
+                  >
+                    <rect x="3" y="3" width="18" height="18" rx="2" />
+                  </svg>
+                )}
+                <span className="text-xs font-bold min-w-[90px]">{isLoading ? t('activities.marking') : t('activities.mark_as_complete')}</span>
+              </div>
+            </div>
+            {showUnmarkedTooltip && (
+              <MiniInfoTooltip
+                icon={infoIcon}
+                message={t('activities.mark_tooltip')}
+                onClose={handleUnmarkedTooltipClose}
+                iconColor="text-gray-600"
+                iconSize={24}
+                width="w-64"
+              />
+            )}
+          </div>
         </div>
       )}
     </>
   )
+}
+
+function NextActivityButton({ course, currentActivityId, orgslug }: { course: any, currentActivityId: string, orgslug: string }) {
+  const { t } = useTranslation();
+  const router = useRouter();
+  const isMobile = useMediaQuery('(max-width: 768px)');
+
+  const findNextActivity = () => {
+    let allActivities: any[] = [];
+    let currentIndex = -1;
+
+    // Flatten all activities from all chapters
+    course.chapters.forEach((chapter: any) => {
+      chapter.activities.forEach((activity: any) => {
+        const cleanActivityUuid = activity.activity_uuid?.replace('activity_', '');
+        allActivities.push({
+          ...activity,
+          cleanUuid: cleanActivityUuid,
+          chapterName: chapter.name
+        });
+
+        // Check if this is the current activity
+        if (activity.id === currentActivityId) {
+          currentIndex = allActivities.length - 1;
+        }
+      });
+    });
+
+    // Get next activity
+    return currentIndex < allActivities.length - 1 ? allActivities[currentIndex + 1] : null;
+  };
+
+  const nextActivity = findNextActivity();
+
+  if (!nextActivity) return null;
+
+  const navigateToActivity = () => {
+    const cleanCourseUuid = course.course_uuid?.replace('course_', '');
+    router.push(getUriWithOrg(orgslug, '') + `/course/${cleanCourseUuid}/activity/${nextActivity.cleanUuid}`);
+  };
+
+  return (
+    <div
+      onClick={navigateToActivity}
+      className="bg-gray-200 rounded-md px-4 shadow-[inset_0_2px_4px_rgba(0,0,0,0.05)] flex flex-col p-2.5 text-gray-600 hover:cursor-pointer transition delay-150 duration-300 ease-in-out hover:bg-gray-200"
+    >
+      <span className="text-[10px] font-bold text-gray-500 mb-1 uppercase">{t('common.next')}</span>
+      <div className="flex items-center space-x-1">
+        <span className="text-sm font-semibold truncate max-w-[200px]">{nextActivity.name}</span>
+        <ChevronRight size={17} />
+      </div>
+    </div>
+  );
+}
+
+function PreviousActivityButton({ course, currentActivityId, orgslug }: { course: any, currentActivityId: string, orgslug: string }) {
+  const { t } = useTranslation();
+  const router = useRouter();
+  const isMobile = useMediaQuery('(max-width: 768px)');
+
+  const findPreviousActivity = () => {
+    let allActivities: any[] = [];
+    let currentIndex = -1;
+
+    // Flatten all activities from all chapters
+    course.chapters.forEach((chapter: any) => {
+      chapter.activities.forEach((activity: any) => {
+        const cleanActivityUuid = activity.activity_uuid?.replace('activity_', '');
+        allActivities.push({
+          ...activity,
+          cleanUuid: cleanActivityUuid,
+          chapterName: chapter.name
+        });
+
+        // Check if this is the current activity
+        if (activity.id === currentActivityId) {
+          currentIndex = allActivities.length - 1;
+        }
+      });
+    });
+
+    // Get previous activity
+    return currentIndex > 0 ? allActivities[currentIndex - 1] : null;
+  };
+
+  const previousActivity = findPreviousActivity();
+
+  if (!previousActivity) return null;
+
+  const navigateToActivity = () => {
+    const cleanCourseUuid = course.course_uuid?.replace('course_', '');
+    router.push(getUriWithOrg(orgslug, '') + `/course/${cleanCourseUuid}/activity/${previousActivity.cleanUuid}`);
+  };
+
+  return (
+    <div
+      onClick={navigateToActivity}
+      className="bg-white rounded-md px-4 nice-shadow flex flex-col p-2.5 text-gray-600 hover:cursor-pointer transition delay-150 duration-300 ease-in-out"
+    >
+      <span className="text-[10px] font-bold text-gray-500 mb-1 uppercase">{t('common.previous')}</span>
+      <div className="flex items-center space-x-1">
+        <ChevronLeft size={17} />
+        <span className="text-sm font-semibold truncate max-w-[200px]">{previousActivity.name}</span>
+      </div>
+    </div>
+  );
 }
 
 function AssignmentTools(props: {
@@ -279,6 +1220,7 @@ function AssignmentTools(props: {
   orgslug: string
   assignment: any
 }) {
+  const { t } = useTranslation();
   const submission = useAssignmentSubmission() as any
   const session = useLHSession() as any;
   const [finalGrade, setFinalGrade] = React.useState(null) as any;
@@ -290,11 +1232,11 @@ function AssignmentTools(props: {
         session.data?.tokens?.access_token
       )
       if (res.success) {
-        toast.success('Assignment submitted for grading')
+        toast.success(t('assignments.assignment_submitted_success'))
         mutate(`${getAPIUrl()}assignments/${props.assignment?.assignment_uuid}/submissions/me`,)
       }
       else {
-        toast.error('Failed to submit assignment for grading')
+        toast.error(t('assignments.failed_submit_assignment'))
       }
     }
   }
@@ -351,13 +1293,16 @@ function AssignmentTools(props: {
   if (!submission || submission.length === 0) {
     return (
       <ConfirmationModal
-        confirmationButtonText="Submit Assignment"
-        confirmationMessage="Are you sure you want to submit your assignment for grading? Once submitted, you will not be able to make any changes."
-        dialogTitle="Submit your assignment for grading"
+        confirmationButtonText={t('assignments.submit_assignment')}
+        confirmationMessage={t('assignments.submit_assignment_confirm')}
+        dialogTitle={t('assignments.submit_assignment_title')}
         dialogTrigger={
-          <div className="bg-cyan-800 rounded-full px-5 drop-shadow-md flex items-center space-x-2 p-2.5 text-white hover:cursor-pointer transition delay-150 duration-300 ease-in-out">
-            <BookOpenCheck size={17} />
-            <span className="text-xs font-bold">Submit for grading</span>
+          <div className="bg-cyan-800 rounded-md px-4 nice-shadow flex flex-col p-2.5 text-white hover:cursor-pointer transition delay-150 duration-300 ease-in-out">
+            <span className="text-[10px] font-bold mb-1 uppercase">{t('common.status')}</span>
+            <div className="flex items-center space-x-2">
+              <BookOpenCheck size={17} />
+              <span className="text-xs font-bold">{t('assignments.submit_for_grading')}</span>
+            </div>
           </div>
         }
         functionToExecute={submitForGradingUI}
@@ -368,18 +1313,27 @@ function AssignmentTools(props: {
 
   if (submission[0].submission_status === 'SUBMITTED') {
     return (
-      <div className="bg-amber-800 rounded-full px-5 drop-shadow-md flex items-center space-x-2 p-2.5 text-white transition delay-150 duration-300 ease-in-out">
-        <UserRoundPen size={17} />
-        <span className="text-xs font-bold">Grading in progress</span>
+      <div className="bg-amber-800 rounded-md px-4 nice-shadow flex flex-col p-2.5 text-white transition delay-150 duration-300 ease-in-out">
+        <span className="text-[10px] font-bold mb-1 uppercase">{t('common.status')}</span>
+        <div className="flex items-center space-x-2">
+          <UserRoundPen size={17} />
+          <span className="text-xs font-bold">{t('assignments.grading_in_progress')}</span>
+        </div>
       </div>
     )
   }
 
   if (submission[0].submission_status === 'GRADED') {
     return (
-      <div className="bg-teal-600 rounded-full px-5 drop-shadow-md flex items-center space-x-2 p-2.5 text-white transition delay-150 duration-300 ease-in-out">
-        <CheckCircle size={17} />
-        <span className="text-xs flex space-x-2 font-bold items-center"><span>Graded </span> <span className='bg-white text-teal-800 px-1 py-0.5 rounded-md'>{finalGrade}</span></span>
+      <div className="bg-teal-600 rounded-md px-4 nice-shadow flex flex-col p-2.5 text-white transition delay-150 duration-300 ease-in-out">
+        <span className="text-[10px] font-bold mb-1 uppercase">{t('common.status')}</span>
+        <div className="flex items-center space-x-2">
+          <CheckCircle size={17} />
+          <span className="text-xs flex space-x-2 font-bold items-center">
+            <span>{t('assignments.graded')} </span>
+            <span className='bg-white text-teal-800 px-1 py-0.5 rounded-md'>{finalGrade}</span>
+          </span>
+        </div>
       </div>
     )
   }

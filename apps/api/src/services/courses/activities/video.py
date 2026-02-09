@@ -1,13 +1,10 @@
 from typing import Literal
+import json
 from src.db.courses.courses import Course
 from src.db.organizations import Organization
 
 from pydantic import BaseModel
 from sqlmodel import Session, select
-from src.security.rbac.rbac import (
-    authorization_verify_based_on_roles_and_authorship_and_usergroups,
-    authorization_verify_if_user_is_anon,
-)
 from src.db.courses.chapters import Chapter
 from src.db.courses.activities import (
     Activity,
@@ -22,6 +19,7 @@ from src.services.courses.activities.uploads.videos import upload_video
 from fastapi import HTTPException, status, UploadFile, Request
 from uuid import uuid4
 from datetime import datetime
+from src.security.rbac import check_resource_access, AccessAction
 
 
 async def create_video_activity(
@@ -31,13 +29,14 @@ async def create_video_activity(
     current_user: PublicUser,
     db_session: Session,
     video_file: UploadFile | None = None,
+    details: str = "{}",
 ):
-    # RBAC check
-    await rbac_check(request, "activity_x", current_user, "create", db_session)
-
     # get chapter_id
     statement = select(Chapter).where(Chapter.id == chapter_id)
     chapter = db_session.exec(statement).first()
+
+    # convert details to dict
+    details = json.loads(details)
 
     if not chapter:
         raise HTTPException(
@@ -54,13 +53,22 @@ async def create_video_activity(
             detail="CourseChapter not found",
         )
 
+    # Get course_uuid for RBAC check
+    statement = select(Course).where(Course.id == coursechapter.course_id)
+    course = db_session.exec(statement).first()
+
+    if not course:
+        raise HTTPException(
+            status_code=404,
+            detail="Course not found",
+        )
+
+    # RBAC check
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.CREATE)
+
     # Get org_uuid
     statement = select(Organization).where(Organization.id == coursechapter.org_id)
     organization = db_session.exec(statement).first()
-
-    # Get course_uuid
-    statement = select(Course).where(Course.id == coursechapter.course_id)
-    course = db_session.exec(statement).first()
 
     # generate activity_uuid
     activity_uuid = str(f"activity_{uuid4()}")
@@ -94,12 +102,11 @@ async def create_video_activity(
         activity_uuid=activity_uuid,
         org_id=coursechapter.org_id,
         course_id=coursechapter.course_id,
-        published_version=1,
         content={
             "filename": "video." + video_format,
             "activity_uuid": activity_uuid,
         },
-        version=1,
+        details=details if isinstance(details, dict) else json.loads(details),
         creation_date=str(datetime.now()),
         update_date=str(datetime.now()),
     )
@@ -111,7 +118,7 @@ async def create_video_activity(
     db_session.refresh(activity)
 
     # upload video
-    if video_file:
+    if video_file and organization and course:
         # get videofile format
         await upload_video(
             video_file,
@@ -119,6 +126,16 @@ async def create_video_activity(
             organization.org_uuid,
             course.course_uuid,
         )
+
+    # Find the last activity order in the chapter
+    statement = (
+        select(ChapterActivity)
+        .where(ChapterActivity.chapter_id == chapter.id)
+        .order_by(ChapterActivity.order)  # type: ignore
+    )
+    chapter_activities = db_session.exec(statement).all()
+    last_order = chapter_activities[-1].order if chapter_activities else 0
+    to_be_used_order = last_order + 1
 
     # update chapter
     chapter_activity_object = ChapterActivity(
@@ -128,7 +145,7 @@ async def create_video_activity(
         org_id=coursechapter.org_id,
         creation_date=str(datetime.now()),
         update_date=str(datetime.now()),
-        order=1,
+        order=to_be_used_order,
     )
 
     # Insert ChapterActivity link in DB
@@ -144,6 +161,7 @@ class ExternalVideo(BaseModel):
     uri: str
     type: Literal["youtube", "vimeo"]
     chapter_id: str
+    details: str = "{}"
 
 
 class ExternalVideoInDB(BaseModel):
@@ -156,9 +174,6 @@ async def create_external_video_activity(
     data: ExternalVideo,
     db_session: Session,
 ):
-    # RBAC check
-    await rbac_check(request, "activity_x", current_user, "create", db_session)
-
     # get chapter_id
     statement = select(Chapter).where(Chapter.id == data.chapter_id)
     chapter = db_session.exec(statement).first()
@@ -178,8 +193,24 @@ async def create_external_video_activity(
             detail="CourseChapter not found",
         )
 
+    # Get course_uuid for RBAC check
+    statement = select(Course).where(Course.id == coursechapter.course_id)
+    course = db_session.exec(statement).first()
+
+    if not course:
+        raise HTTPException(
+            status_code=404,
+            detail="Course not found",
+        )
+
+    # RBAC check
+    await check_resource_access(request, db_session, current_user, course.course_uuid, AccessAction.CREATE)
+
     # generate activity_uuid
     activity_uuid = str(f"activity_{uuid4()}")
+
+    # convert details to dict
+    details = json.loads(data.details)
 
     activity_object = Activity(
         name=data.name,
@@ -188,13 +219,12 @@ async def create_external_video_activity(
         activity_uuid=activity_uuid,
         course_id=coursechapter.course_id,
         org_id=coursechapter.org_id,
-        published_version=1,
         content={
             "uri": data.uri,
             "type": data.type,
             "activity_uuid": activity_uuid,
         },
-        version=1,
+        details=details,
         creation_date=str(datetime.now()),
         update_date=str(datetime.now()),
     )
@@ -205,6 +235,16 @@ async def create_external_video_activity(
     db_session.commit()
     db_session.refresh(activity)
 
+    # Find the last activity order in the chapter
+    statement = (
+        select(ChapterActivity)
+        .where(ChapterActivity.chapter_id == coursechapter.chapter_id)
+        .order_by(ChapterActivity.order)  # type: ignore
+    )
+    chapter_activities = db_session.exec(statement).all()
+    last_order = chapter_activities[-1].order if chapter_activities else 0
+    to_be_used_order = last_order + 1
+
     # update chapter
     chapter_activity_object = ChapterActivity(
         chapter_id=coursechapter.chapter_id,  # type: ignore
@@ -213,7 +253,7 @@ async def create_external_video_activity(
         org_id=coursechapter.org_id,
         creation_date=str(datetime.now()),
         update_date=str(datetime.now()),
-        order=1,
+        order=to_be_used_order,
     )
 
     # Insert ChapterActivity link in DB
@@ -221,24 +261,6 @@ async def create_external_video_activity(
     db_session.commit()
 
     return ActivityRead.model_validate(activity)
-
-
-async def rbac_check(
-    request: Request,
-    course_id: str,
-    current_user: PublicUser | AnonymousUser,
-    action: Literal["create", "read", "update", "delete"],
-    db_session: Session,
-):
-    await authorization_verify_if_user_is_anon(current_user.id)
-
-    await authorization_verify_based_on_roles_and_authorship_and_usergroups(
-        request,
-        current_user.id,
-        action,
-        course_id,
-        db_session,
-    )
 
 
 ## 🔒 RBAC Utils ##

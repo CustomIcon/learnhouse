@@ -16,14 +16,48 @@ class Permission(BaseModel):
         return getattr(self, item)
 
 
+class PermissionsWithOwn(BaseModel):
+    action_create: bool
+    action_read: bool
+    action_read_own: bool
+    action_update: bool
+    action_update_own: bool
+    action_delete: bool
+    action_delete_own: bool
+
+    def __getitem__(self, item):
+        return getattr(self, item)
+
+
+class DashboardPermission(BaseModel):
+    action_access: bool
+
+    def __getitem__(self, item):
+        return getattr(self, item)
+
+
 class Rights(BaseModel):
-    courses: Permission
+    courses: PermissionsWithOwn
     users: Permission
     usergroups : Permission
     collections: Permission
     organizations: Permission
     coursechapters: Permission
     activities: Permission
+    roles: Permission
+    dashboard: DashboardPermission
+    communities: Permission
+    discussions: PermissionsWithOwn  # Own = author can edit/delete their own
+    podcasts: PermissionsWithOwn  # Own = author can edit/delete their own podcasts
+    docspaces: PermissionsWithOwn = PermissionsWithOwn(
+        action_create=False,
+        action_read=True,
+        action_read_own=True,
+        action_update=False,
+        action_update_own=False,
+        action_delete=False,
+        action_delete_own=False,
+    )  # Default: read-only for backward compat with existing roles
 
     def __getitem__(self, item):
         return getattr(self, item)
@@ -40,15 +74,15 @@ class RoleTypeEnum(str, Enum):
 
 class RoleBase(SQLModel):
     name: str
-    description: Optional[str]
-    rights: Optional[Union[Rights, dict]] = Field(default={}, sa_column=Column(JSON))
+    description: Optional[str] = None
+    rights: Optional[Union[Rights, dict]] = Field(default_factory=dict, sa_column=Column(JSON))
 
 
 class Role(RoleBase, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
     org_id: Optional[int] = Field(
         default=None,
-        sa_column=Column(Integer, ForeignKey("organization.id", ondelete="CASCADE"))
+        sa_column=Column(Integer, ForeignKey("organization.id", ondelete="CASCADE"), index=True)
     )
     role_type: RoleTypeEnum = RoleTypeEnum.TYPE_GLOBAL
     role_uuid: str = ""
@@ -58,7 +92,7 @@ class Role(RoleBase, table=True):
 
 class RoleRead(RoleBase):
     id: Optional[int] = Field(default=None, primary_key=True)
-    org_id: int = Field(default=None, foreign_key="organization.id")
+    org_id: Optional[int] = Field(default=None, foreign_key="organization.id")
     role_type: RoleTypeEnum = RoleTypeEnum.TYPE_GLOBAL
     role_uuid: str
     creation_date: str
@@ -71,6 +105,6 @@ class RoleCreate(RoleBase):
 
 class RoleUpdate(SQLModel):
     role_id: int = Field(default=None, foreign_key="role.id")
-    name: Optional[str]
-    description: Optional[str]
-    rights: Optional[Union[Rights, dict]] = Field(default={}, sa_column=Column(JSON))
+    name: Optional[str] = None
+    description: Optional[str] = None
+    rights: Optional[Union[Rights, dict]] = Field(default_factory=dict, sa_column=Column(JSON))

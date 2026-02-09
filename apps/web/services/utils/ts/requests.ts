@@ -1,4 +1,24 @@
-import { getUriWithOrg } from '@services/config/config'
+import { getUriWithOrg, getAPIUrl } from '@services/config/config'
+
+/**
+ * Validates that a URL is a safe API URL by checking it starts with the configured API base URL.
+ * This prevents SSRF attacks by ensuring requests only go to the expected API server.
+ */
+function validateApiUrl(url: string): void {
+  const apiBase = getAPIUrl();
+  if (!url.startsWith(apiBase)) {
+    throw new Error(`Invalid API URL: URL must start with ${apiBase}`);
+  }
+}
+
+/**
+ * A secure fetch wrapper that validates URLs before making requests.
+ * Use this for all API calls to prevent SSRF vulnerabilities.
+ */
+export async function secureFetch(url: string, options: RequestInit): Promise<Response> {
+  validateApiUrl(url);
+  return fetch(url, options);
+}
 
 export const RequestBody = (method: string, data: any, next: any) => {
   let HeadersConfig = new Headers({ 'Content-Type': 'application/json' })
@@ -32,7 +52,7 @@ export const RequestBodyWithAuthHeader = (
     headers: HeadersConfig,
     redirect: 'follow',
     credentials: 'include',
-    body: (method === 'POST' || method === 'PUT') ? JSON.stringify(data) : null,
+    body: (method === 'POST' || method === 'PUT' || method === 'DELETE') && data !== null ? JSON.stringify(data) : null,
     // Next.js
     next: next,
   }
@@ -100,10 +120,18 @@ export const swrFetcher = async (url: string, token?: string) => {
   }
 }
 
-export const errorHandling = (res: any) => {
+export const errorHandling = async (res: any) => {
   if (!res.ok) {
-    const error: any = new Error(`${res.statusText}`)
+    let detail: any = res.statusText
+    try {
+      const body = await res.json()
+      detail = body.detail || body.message || body
+    } catch (_e) {
+      // If we can't parse JSON, use statusText
+    }
+    const error: any = new Error(typeof detail === 'string' ? detail : JSON.stringify(detail))
     error.status = res.status
+    error.detail = detail
     throw error
   }
   return res.json()
@@ -139,7 +167,11 @@ export const getResponseMetadata = async (
 
 export const revalidateTags = async (tags: string[], orgslug: string) => {
   const url = getUriWithOrg(orgslug, '')
-  tags.forEach((tag) => {
-    fetch(`${url}/api/revalidate?tag=${tag}`)
-  })
+  await Promise.allSettled(
+    tags.map((tag) =>
+      fetch(`${url}/api/revalidate?tag=${tag}`).catch((err) =>
+        console.error(`Failed to revalidate tag ${tag}:`, err)
+      )
+    )
+  )
 }

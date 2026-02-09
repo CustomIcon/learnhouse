@@ -1,50 +1,74 @@
 'use client'
-import { getAPIUrl, getUriWithoutOrg } from '@services/config/config'
+import { getAPIUrl } from '@services/config/config'
 import { swrFetcher } from '@services/utils/ts/requests'
 import React, { createContext, useContext, useMemo } from 'react'
 import useSWR from 'swr'
 import { useLHSession } from '@components/Contexts/LHSessionContext'
-import ErrorUI from '@components/StyledElements/Error/Error'
-import InfoUI from '@components/StyledElements/Info/Info'
-import { usePathname } from 'next/navigation'
+import ErrorUI from '@components/Objects/StyledElements/Error/Error'
 
-export const OrgContext = createContext(null)
+interface OrgContextValue {
+  org: any
+  isUserPartOfTheOrg: boolean
+  orgslug: string
+}
+
+export const OrgContext = createContext<OrgContextValue | null>(null)
 
 export function OrgProvider({ children, orgslug }: { children: React.ReactNode, orgslug: string }) {
   const session = useLHSession() as any
-  const pathname = usePathname()
   const accessToken = session?.data?.tokens?.access_token
-  const isAllowedPathname = ['/login', '/signup'].includes(pathname);
 
   const { data: org, error: orgError } = useSWR(
     `${getAPIUrl()}orgs/slug/${orgslug}`,
-    (url) => swrFetcher(url, accessToken)
+    (url) => swrFetcher(url, accessToken),
+    {
+      revalidateOnFocus: true,
+      revalidateOnMount: true,
+      dedupingInterval: 5000,
+    }
   )
   const { data: orgs, error: orgsError } = useSWR(
     `${getAPIUrl()}orgs/user/page/1/limit/10`,
-    (url) => swrFetcher(url, accessToken)
+    (url) => swrFetcher(url, accessToken),
+    {
+      revalidateOnFocus: true,
+      revalidateOnMount: true,
+      dedupingInterval: 5000,
+    }
   )
 
-
   const isOrgActive = useMemo(() => org?.config?.config?.general?.enabled !== false, [org])
-  const isUserPartOfTheOrg = useMemo(() => orgs?.some((userOrg: any) => userOrg.id === org?.id), [orgs, org?.id])
+  const isUserPartOfTheOrg = useMemo(() => {
+    // If user is not authenticated, treat them as "part of org" for viewing purposes
+    if (session.status !== 'authenticated') return true
+    return orgs?.some((userOrg: any) => userOrg.id === org?.id) ?? false
+  }, [orgs, org?.id, session.status])
 
   if (orgError || orgsError) return <ErrorUI message='An error occurred while fetching data' />
   if (!org || !orgs || !session) return <div></div>
   if (!isOrgActive) return <ErrorUI message='This organization is no longer active' />
-  if (!isUserPartOfTheOrg && session.status == 'authenticated' && !isAllowedPathname) {
-    return (
-      <InfoUI
-        href={getUriWithoutOrg(`/signup?orgslug=${orgslug}`)}
-        message='You are not part of this Organization yet'
-        cta={`Join ${org?.name}`}
-      />
-    )
+
+  const contextValue: OrgContextValue = {
+    org,
+    isUserPartOfTheOrg,
+    orgslug,
   }
 
-  return <OrgContext.Provider value={org}>{children}</OrgContext.Provider>
+  return <OrgContext.Provider value={contextValue}>{children}</OrgContext.Provider>
 }
 
+// Backward compatible hook - returns just the org object
 export function useOrg() {
-  return useContext(OrgContext)
+  const context = useContext(OrgContext)
+  return context?.org ?? null
+}
+
+// New hook to get membership status
+export function useOrgMembership() {
+  const context = useContext(OrgContext)
+  return {
+    org: context?.org ?? null,
+    isUserPartOfTheOrg: context?.isUserPartOfTheOrg ?? true,
+    orgslug: context?.orgslug ?? '',
+  }
 }

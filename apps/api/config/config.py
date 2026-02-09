@@ -5,34 +5,35 @@ from pydantic import BaseModel
 from dotenv import load_dotenv
 
 
-class SentryConfig(BaseModel):
-    dsn: str
-    environment: str
-    release: str
-
-
 class CookieConfig(BaseModel):
     domain: str
 
 
+class SentryConfig(BaseModel):
+    dsn: str | None
+
+
+class TinybirdConfig(BaseModel):
+    api_url: str
+    ingest_token: str
+    read_token: str
+
+
 class GeneralConfig(BaseModel):
     development_mode: bool
-    install_mode: bool
+    logfire_enabled: bool
+    sentry_config: SentryConfig
+    oss_mode: bool
+    env: str
 
 
 class SecurityConfig(BaseModel):
     auth_jwt_secret_key: str
 
 
-class ChromaDBConfig(BaseModel):
-    isSeparateDatabaseEnabled: bool | None 
-    db_host: str | None 
-
-
 class AIConfig(BaseModel):
-    openai_api_key: str | None
+    gemini_api_key: str | None
     is_ai_enabled: bool | None
-    chromadb_config: ChromaDBConfig | None
 
 
 class S3ApiConfig(BaseModel):
@@ -53,7 +54,6 @@ class HostingConfig(BaseModel):
     allowed_origins: list
     allowed_regexp: str
     self_hosted: bool
-    sentry_config: Optional[SentryConfig]
     cookie_config: CookieConfig
     content_delivery: ContentDeliveryConfig
 
@@ -71,6 +71,18 @@ class RedisConfig(BaseModel):
     redis_connection_string: Optional[str]
 
 
+class InternalStripeConfig(BaseModel):
+    stripe_secret_key: str | None
+    stripe_publishable_key: str | None
+    stripe_webhook_standard_secret: str | None
+    stripe_webhook_connect_secret: str | None
+    stripe_client_id: str | None
+
+
+class InternalPaymentsConfig(BaseModel):
+    stripe: InternalStripeConfig
+
+
 class LearnHouseConfig(BaseModel):
     site_name: str
     site_description: str
@@ -82,6 +94,8 @@ class LearnHouseConfig(BaseModel):
     security_config: SecurityConfig
     ai_config: AIConfig
     mailing_config: MailingConfig
+    payments_config: InternalPaymentsConfig
+    tinybird_config: TinybirdConfig | None
 
 
 def get_learnhouse_config() -> LearnHouseConfig:
@@ -94,22 +108,44 @@ def get_learnhouse_config() -> LearnHouseConfig:
     # Load the YAML file
     with open(yaml_path, "r") as f:
         yaml_config = yaml.safe_load(f)
+    
+    # Ensure yaml_config is not None (defensive programming)
+    if yaml_config is None:
+        yaml_config = {}
 
     # General Config
 
-    # Development Mode & Install Mode
-    env_development_mode = eval(os.environ.get("LEARNHOUSE_DEVELOPMENT_MODE", "None"))
+    # Development Mode
+    env_development_mode_str = os.environ.get("LEARNHOUSE_DEVELOPMENT_MODE", "None")
+    if env_development_mode_str != "None":
+        env_development_mode = env_development_mode_str.lower() in ("true", "1", "yes")
+    else:
+        env_development_mode = None
     development_mode = (
         env_development_mode
         if env_development_mode is not None
         else yaml_config.get("general", {}).get("development_mode")
     )
 
-    env_install_mode = os.environ.get("LEARNHOUSE_INSTALL_MODE", "None")
-    install_mode = (
-        env_install_mode
-        if env_install_mode is not None
-        else yaml_config.get("general", {}).get("install_mode")
+    # Logfire config
+    env_logfire_enabled = os.environ.get("LEARNHOUSE_LOGFIRE_ENABLED", "None")
+    logfire_enabled = (
+        env_logfire_enabled.lower() == "true" if env_logfire_enabled != "None"
+        else yaml_config.get("general", {}).get("logfire_enabled", False)
+    )
+
+    # Sentry config
+    env_sentry_dsn = os.environ.get("LEARNHOUSE_SENTRY_DSN")
+    sentry_dsn = env_sentry_dsn or yaml_config.get("general", {}).get("sentry_dsn")
+
+    # Environment (dev or prod)
+    learnhouse_env = os.environ.get("LEARNHOUSE_ENV", "dev")
+
+    # OSS Mode (disables plan-based limits for self-hosted deployments)
+    env_oss_mode = os.environ.get("LEARNHOUSE_OSS", "None")
+    oss_mode = (
+        env_oss_mode.lower() in ("true", "1", "yes") if env_oss_mode != "None"
+        else yaml_config.get("general", {}).get("oss_mode", False)
     )
 
     # Security Config
@@ -117,6 +153,20 @@ def get_learnhouse_config() -> LearnHouseConfig:
     auth_jwt_secret_key = env_auth_jwt_secret_key or yaml_config.get(
         "security", {}
     ).get("auth_jwt_secret_key")
+
+    # SECURITY: Validate JWT secret key exists and has sufficient entropy
+    if not auth_jwt_secret_key:
+        raise ValueError(
+            "SECURITY ERROR: LEARNHOUSE_AUTH_JWT_SECRET_KEY must be set. "
+            "Generate a secure key with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+        )
+    if len(auth_jwt_secret_key) < 32:
+        raise ValueError(
+            "SECURITY ERROR: LEARNHOUSE_AUTH_JWT_SECRET_KEY must be at least 32 characters. "
+            "Current length: {}. Generate a secure key with: python -c \"import secrets; print(secrets.token_urlsafe(32))\"".format(
+                len(auth_jwt_secret_key)
+            )
+        )
 
     # Check if environment variables are defined
     env_site_name = os.environ.get("LEARNHOUSE_SITE_NAME")
@@ -137,10 +187,7 @@ def get_learnhouse_config() -> LearnHouseConfig:
     env_self_hosted = os.environ.get("LEARNHOUSE_SELF_HOSTED")
     env_sql_connection_string = os.environ.get("LEARNHOUSE_SQL_CONNECTION_STRING")
 
-    # Sentry Config
-    env_sentry_dsn = os.environ.get("LEARNHOUSE_SENTRY_DSN")
-    env_sentry_environment = os.environ.get("LEARNHOUSE_SENTRY_ENVIRONMENT")
-    env_sentry_release = os.environ.get("LEARNHOUSE_SENTRY_RELEASE")
+    
 
     # Fill in values with YAML file if they are not provided
     site_name = env_site_name or yaml_config.get("site_name")
@@ -200,23 +247,18 @@ def get_learnhouse_config() -> LearnHouseConfig:
     ).get("sql_connection_string")
 
     # AI Config
-    env_openai_api_key = os.environ.get("LEARNHOUSE_OPENAI_API_KEY")
-    env_is_ai_enabled = os.environ.get("LEARNHOUSE_IS_AI_ENABLED")
-    env_chromadb_separate = os.environ.get("LEARNHOUSE_CHROMADB_SEPARATE")
-    env_chromadb_host = os.environ.get("LEARNHOUSE_CHROMADB_HOST")
+    env_gemini_api_key = os.environ.get("LEARNHOUSE_GEMINI_API_KEY")
+    env_is_ai_enabled_str = os.environ.get("LEARNHOUSE_IS_AI_ENABLED")
 
-    openai_api_key = env_openai_api_key or yaml_config.get("ai_config", {}).get(
-        "openai_api_key"
+    gemini_api_key = env_gemini_api_key or yaml_config.get("ai_config", {}).get(
+        "gemini_api_key"
     )
-    is_ai_enabled = env_is_ai_enabled or yaml_config.get("ai_config", {}).get(
-        "is_ai_enabled"
-    )
-    chromadb_separate = env_chromadb_separate or yaml_config.get("ai_config", {}).get(
-        "chromadb_config", {}
-    ).get("isSeparateDatabaseEnabled")
-    chromadb_host = env_chromadb_host or yaml_config.get("ai_config", {}).get(
-        "chromadb_config", {}
-    ).get("db_host")
+    
+    # Parse is_ai_enabled from env or yaml
+    if env_is_ai_enabled_str:
+        is_ai_enabled = env_is_ai_enabled_str.lower() in ("true", "1", "yes")
+    else:
+        is_ai_enabled = yaml_config.get("ai_config", {}).get("is_ai_enabled", False)
 
     # Redis config
     env_redis_connection_string = os.environ.get("LEARNHOUSE_REDIS_CONNECTION_STRING")
@@ -232,34 +274,57 @@ def get_learnhouse_config() -> LearnHouseConfig:
     )
     system_email_address = env_system_email_address or yaml_config.get(
         "mailing_config", {}
-    ).get("system_email_adress")
+    ).get("system_email_address")
 
-    # Sentry config
-    # check if the sentry config is provided in the YAML file
-    sentry_config_verif = (
-        yaml_config.get("hosting_config", {}).get("sentry_config")
-        or env_sentry_dsn
-        or env_sentry_environment
-        or env_sentry_release
-        or None
+    # Tinybird config — auto-enabled when both tokens are set
+    env_tinybird_api_url = os.environ.get("LEARNHOUSE_TINYBIRD_API_URL")
+    env_tinybird_ingest_token = os.environ.get("LEARNHOUSE_TINYBIRD_INGEST_TOKEN")
+    env_tinybird_read_token = os.environ.get("LEARNHOUSE_TINYBIRD_READ_TOKEN")
+
+    tinybird_api_url = env_tinybird_api_url or yaml_config.get("tinybird_config", {}).get(
+        "api_url", "https://api.tinybird.co"
     )
-
-    sentry_dsn = env_sentry_dsn or yaml_config.get("hosting_config", {}).get(
-        "sentry_config", {}
-    ).get("dsn")
-    sentry_environment = env_sentry_environment or yaml_config.get(
-        "hosting_config", {}
-    ).get("sentry_config", {}).get("environment")
-    sentry_release = env_sentry_release or yaml_config.get("hosting_config", {}).get(
-        "sentry_config", {}
-    ).get("release")
-
-    if sentry_config_verif:
-        sentry_config = SentryConfig(
-            dsn=sentry_dsn, environment=sentry_environment, release=sentry_release
+    tinybird_ingest_token = env_tinybird_ingest_token or yaml_config.get("tinybird_config", {}).get(
+        "ingest_token", ""
+    )
+    tinybird_read_token = env_tinybird_read_token or yaml_config.get("tinybird_config", {}).get(
+        "read_token", ""
+    )
+    # Only create TinybirdConfig when both tokens are provided
+    tinybird_config = None
+    if tinybird_ingest_token and tinybird_read_token:
+        tinybird_config = TinybirdConfig(
+            api_url=tinybird_api_url,
+            ingest_token=tinybird_ingest_token,
+            read_token=tinybird_read_token,
         )
-    else:
-        sentry_config = None
+
+    # Payments config
+    env_stripe_secret_key = os.environ.get("LEARNHOUSE_STRIPE_SECRET_KEY")
+    env_stripe_publishable_key = os.environ.get("LEARNHOUSE_STRIPE_PUBLISHABLE_KEY")
+    env_stripe_webhook_standard_secret = os.environ.get("LEARNHOUSE_STRIPE_WEBHOOK_STANDARD_SECRET")
+    env_stripe_webhook_connect_secret = os.environ.get("LEARNHOUSE_STRIPE_WEBHOOK_CONNECT_SECRET")
+    env_stripe_client_id = os.environ.get("LEARNHOUSE_STRIPE_CLIENT_ID")
+    
+    stripe_secret_key = env_stripe_secret_key or yaml_config.get("payments_config", {}).get(
+        "stripe", {}
+    ).get("stripe_secret_key")
+    
+    stripe_publishable_key = env_stripe_publishable_key or yaml_config.get("payments_config", {}).get(
+        "stripe", {}
+    ).get("stripe_publishable_key")
+
+    stripe_webhook_standard_secret = env_stripe_webhook_standard_secret or yaml_config.get("payments_config", {}).get(
+        "stripe", {}
+    ).get("stripe_webhook_standard_secret")
+
+    stripe_webhook_connect_secret = env_stripe_webhook_connect_secret or yaml_config.get("payments_config", {}).get(
+        "stripe", {}
+    ).get("stripe_webhook_connect_secret")
+
+    stripe_client_id = env_stripe_client_id or yaml_config.get("payments_config", {}).get(
+        "stripe", {}
+    ).get("stripe_client_id")
 
     # Create HostingConfig and DatabaseConfig objects
     hosting_config = HostingConfig(
@@ -270,7 +335,6 @@ def get_learnhouse_config() -> LearnHouseConfig:
         allowed_origins=list(allowed_origins),
         allowed_regexp=allowed_regexp,
         self_hosted=bool(self_hosted),
-        sentry_config=sentry_config,
         cookie_config=cookie_config,
         content_delivery=content_delivery,
     )
@@ -280,11 +344,8 @@ def get_learnhouse_config() -> LearnHouseConfig:
 
     # AI Config
     ai_config = AIConfig(
-        openai_api_key=openai_api_key,
+        gemini_api_key=gemini_api_key,
         is_ai_enabled=bool(is_ai_enabled),
-        chromadb_config=ChromaDBConfig(
-            isSeparateDatabaseEnabled=bool(chromadb_separate), db_host=chromadb_host
-        ),
     )
 
     # Create LearnHouseConfig object
@@ -293,7 +354,11 @@ def get_learnhouse_config() -> LearnHouseConfig:
         site_description=site_description,
         contact_email=contact_email,
         general_config=GeneralConfig(
-            development_mode=bool(development_mode), install_mode=bool(install_mode)
+            development_mode=bool(development_mode),
+            logfire_enabled=bool(logfire_enabled),
+            sentry_config=SentryConfig(dsn=sentry_dsn),
+            oss_mode=bool(oss_mode),
+            env=learnhouse_env,
         ),
         hosting_config=hosting_config,
         database_config=database_config,
@@ -303,6 +368,16 @@ def get_learnhouse_config() -> LearnHouseConfig:
         mailing_config=MailingConfig(
             resend_api_key=resend_api_key, system_email_address=system_email_address
         ),
+        payments_config=InternalPaymentsConfig(
+            stripe=InternalStripeConfig(
+                stripe_secret_key=stripe_secret_key,
+                stripe_publishable_key=stripe_publishable_key,
+                stripe_webhook_standard_secret=stripe_webhook_standard_secret,
+                stripe_webhook_connect_secret=stripe_webhook_connect_secret,
+                stripe_client_id=stripe_client_id
+            )
+        ),
+        tinybird_config=tinybird_config,
     )
 
     return config

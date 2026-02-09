@@ -1,5 +1,5 @@
-from typing import Literal
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile
+from typing import Literal, List, Union
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, Query
 from pydantic import EmailStr
 from sqlmodel import Session
 from src.services.users.password_reset import (
@@ -7,12 +7,13 @@ from src.services.users.password_reset import (
     send_reset_password_code,
 )
 from src.services.orgs.orgs import get_org_join_mechanism
-from src.security.auth import get_current_user
+from src.security.auth import get_current_user, get_authenticated_user
 from src.core.events.database import get_db_session
+from src.db.courses.courses import CourseRead
 
 from src.db.users import (
+    AnonymousUser,
     PublicUser,
-    User,
     UserCreate,
     UserRead,
     UserSession,
@@ -28,17 +29,21 @@ from src.services.users.users import (
     get_user_session,
     read_user_by_id,
     read_user_by_uuid,
+    read_user_by_username,
     update_user,
     update_user_avatar,
     update_user_password,
 )
+from src.services.courses.courses import get_user_courses
 
 
 router = APIRouter()
 
 
 @router.get("/profile")
-async def api_get_current_user(current_user: User = Depends(get_current_user)):
+async def api_get_current_user(
+    current_user: Union[PublicUser, AnonymousUser] = Depends(get_current_user)
+):
     """
     Get current user
     """
@@ -49,7 +54,7 @@ async def api_get_current_user(current_user: User = Depends(get_current_user)):
 async def api_get_current_user_session(
     request: Request,
     db_session: Session = Depends(get_db_session),
-    current_user: PublicUser = Depends(get_current_user),
+    current_user: Union[PublicUser, AnonymousUser] = Depends(get_current_user),
 ) -> UserSession:
     """
     Get current user
@@ -147,11 +152,14 @@ async def api_get_user_by_id(
     *,
     request: Request,
     db_session: Session = Depends(get_db_session),
-    current_user: PublicUser = Depends(get_current_user),
+    current_user: PublicUser = Depends(get_authenticated_user),
     user_id: int,
 ) -> UserRead:
     """
-    Get User by ID
+    Get User by ID.
+
+    SECURITY: Requires authentication to prevent user enumeration attacks.
+    Anonymous users cannot access this endpoint.
     """
     return await read_user_by_id(request, db_session, current_user, user_id)
 
@@ -161,13 +169,31 @@ async def api_get_user_by_uuid(
     *,
     request: Request,
     db_session: Session = Depends(get_db_session),
-    current_user: PublicUser = Depends(get_current_user),
+    current_user: PublicUser = Depends(get_authenticated_user),
     user_uuid: str,
 ) -> UserRead:
     """
-    Get User by UUID
+    Get User by UUID.
+
+    SECURITY: Requires authentication to prevent user enumeration attacks.
     """
     return await read_user_by_uuid(request, db_session, current_user, user_uuid)
+
+
+@router.get("/username/{username}", response_model=UserRead, tags=["users"])
+async def api_get_user_by_username(
+    *,
+    request: Request,
+    db_session: Session = Depends(get_db_session),
+    current_user: PublicUser = Depends(get_authenticated_user),
+    username: str,
+) -> UserRead:
+    """
+    Get User by Username.
+
+    SECURITY: Requires authentication to prevent username enumeration attacks.
+    """
+    return await read_user_by_username(request, db_session, current_user, username)
 
 
 @router.put("/{user_id}", response_model=UserRead, tags=["users"])
@@ -191,11 +217,21 @@ async def api_update_avatar_user(
     request: Request,
     db_session: Session = Depends(get_db_session),
     current_user: PublicUser = Depends(get_current_user),
+    user_id: int,
     avatar_file: UploadFile | None = None,
 ) -> UserRead:
     """
-    Update User
+    Update User Avatar
+
+    SECURITY: Users can only update their own avatar.
+    The user_id in the URL must match the authenticated user's ID.
     """
+    # SECURITY: IDOR protection - verify user can only update their own avatar
+    if current_user.id != user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only update your own avatar",
+        )
     return await update_user_avatar(request, db_session, current_user, avatar_file)
 
 
@@ -262,3 +298,28 @@ async def api_delete_user(
     Delete User
     """
     return await delete_user_by_id(request, db_session, current_user, user_id)
+
+
+@router.get("/{user_id}/courses", response_model=List[CourseRead], tags=["users"])
+async def api_get_user_courses(
+    *,
+    request: Request,
+    db_session: Session = Depends(get_db_session),
+    current_user: PublicUser = Depends(get_current_user),
+    user_id: int,
+    page: int = Query(default=1, ge=1, description="Page number"),
+    limit: int = Query(default=10, ge=1, le=50, description="Items per page (max 50)"),
+) -> List[CourseRead]:
+    """
+    Get courses made or contributed by a user.
+
+    SECURITY: Maximum limit is 50 to prevent data dumping.
+    """
+    return await get_user_courses(
+        request=request,
+        current_user=current_user,
+        user_id=user_id,
+        db_session=db_session,
+        page=page,
+        limit=limit,
+    )

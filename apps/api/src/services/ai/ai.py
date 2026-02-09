@@ -1,17 +1,22 @@
+from typing import Tuple, Dict, Any
 from fastapi import Depends, HTTPException, Request
 from sqlmodel import Session, select
 from src.db.organization_config import OrganizationConfig
 from src.db.organizations import Organization
 from src.security.features_utils.usage import (
-    check_limits_with_usage,
-    increase_feature_usage,
+    check_ai_credits,
+    deduct_ai_credit,
 )
 from src.db.courses.courses import Course, CourseRead
 from src.core.events.database import get_db_session
 from src.db.users import PublicUser
 from src.db.courses.activities import Activity, ActivityRead
 from src.security.auth import get_current_user
-from src.services.ai.base import ask_ai, get_chat_session_history
+from src.services.ai.base import (
+    ask_ai,
+    get_chat_session_history,
+    save_message_to_history,
+)
 
 from src.services.ai.schemas.ai import (
     ActivityAIChatSessionResponse,
@@ -42,14 +47,46 @@ def ai_start_activity_chat_session(
 
     activity = ActivityRead.model_validate(activity)
 
-    # Get the Course
+    # Get the Course with authors
     statement = (
         select(Course)
         .join(Activity)
         .where(Activity.activity_uuid == chat_session_object.activity_uuid)
     )
     course = db_session.exec(statement).first()
-    course = CourseRead.model_validate(course)
+    
+    if not course:
+        raise HTTPException(
+            status_code=404,
+            detail="Course not found",
+        )
+    
+    # Get course authors
+    from src.db.resource_authors import ResourceAuthor
+    from src.db.users import User
+    from src.services.courses.courses import AuthorWithRole, UserRead
+    
+    authors_statement = (
+        select(ResourceAuthor, User)
+        .join(User, ResourceAuthor.user_id == User.id)  # type: ignore
+        .where(ResourceAuthor.resource_uuid == course.course_uuid)
+        .order_by(ResourceAuthor.id.asc())  # type: ignore
+    )
+    author_results = db_session.exec(authors_statement).all()
+    
+    # Convert to AuthorWithRole objects
+    authors = [
+        AuthorWithRole(
+            user=UserRead.model_validate(user),
+            authorship=resource_author.authorship,
+            authorship_status=resource_author.authorship_status,
+            creation_date=resource_author.creation_date,
+            update_date=resource_author.update_date
+        )
+        for resource_author, user in author_results
+    ]
+    
+    course = CourseRead(**course.model_dump(), authors=authors)
 
     # Get the Organization
     statement = select(Organization).where(Organization.id == course.org_id)
@@ -62,8 +99,8 @@ def ai_start_activity_chat_session(
         )
 
     # Check limits and usage
-    check_limits_with_usage("ai", org.id, db_session)
-    increase_feature_usage("ai", org.id, db_session)
+    check_ai_credits(org.id, db_session)
+    deduct_ai_credit(org.id, db_session)
 
     if not activity:
         raise HTTPException(
@@ -95,16 +132,17 @@ def ai_start_activity_chat_session(
     org_config = result.first()
 
     org_config = OrganizationConfig.model_validate(org_config)
-    embeddings = "text-embedding-ada-002"
-    ai_model = org_config.config["features"]["ai"]["model"]
+
+    # Use Gemini 2.5 Flash as the default model
+    ai_model = "gemini-2.5-flash"
 
     chat_session = get_chat_session_history()
 
     message = "You are a helpful Education Assistant, and you are helping a student with the associated Course. "
-    message += "Use the available tools to get context about this question even if the question is not specific enough."
-    message += "For context, this is the Course name :"
+    message += "Use the course content provided to answer questions about the course material."
+    message += "For context, this is the Course name: "
     message += course.name
-    message += " and this is the Lecture name :"
+    message += " and this is the Lecture name: "
     message += activity.name
     message += "."
     message += "Use your knowledge to help the student if the context is not enough."
@@ -114,8 +152,14 @@ def ai_start_activity_chat_session(
         chat_session["message_history"],
         ai_friendly_text,
         message,
-        embeddings,
         ai_model,
+    )
+
+    # Save the message exchange to history
+    save_message_to_history(
+        chat_session["aichat_uuid"],
+        chat_session_object.message,
+        response["output"]
     )
 
     return ActivityAIChatSessionResponse(
@@ -132,7 +176,7 @@ def ai_send_activity_chat_message(
     db_session: Session = Depends(get_db_session),
 ) -> ActivityAIChatSessionResponse:
     """
-    Start a new AI Chat session with a Course Activity
+    Send a message in an existing AI Chat session with a Course Activity
     """
     # Get the Activity
     statement = select(Activity).where(
@@ -142,22 +186,54 @@ def ai_send_activity_chat_message(
 
     activity = ActivityRead.model_validate(activity)
 
-    # Get the Course
+    # Get the Course with authors
     statement = (
         select(Course)
         .join(Activity)
         .where(Activity.activity_uuid == chat_session_object.activity_uuid)
     )
     course = db_session.exec(statement).first()
-    course = CourseRead.model_validate(course)
+
+    if not course:
+        raise HTTPException(
+            status_code=404,
+            detail="Course not found",
+        )
+
+    # Get course authors
+    from src.db.resource_authors import ResourceAuthor
+    from src.db.users import User
+    from src.services.courses.courses import AuthorWithRole, UserRead
+
+    authors_statement = (
+        select(ResourceAuthor, User)
+        .join(User, ResourceAuthor.user_id == User.id)  # type: ignore
+        .where(ResourceAuthor.resource_uuid == course.course_uuid)
+        .order_by(ResourceAuthor.id.asc())  # type: ignore
+    )
+    author_results = db_session.exec(authors_statement).all()
+
+    # Convert to AuthorWithRole objects
+    authors = [
+        AuthorWithRole(
+            user=UserRead.model_validate(user),
+            authorship=resource_author.authorship,
+            authorship_status=resource_author.authorship_status,
+            creation_date=resource_author.creation_date,
+            update_date=resource_author.update_date
+        )
+        for resource_author, user in author_results
+    ]
+
+    course = CourseRead(**course.model_dump(), authors=authors)
 
     # Get the Organization
     statement = select(Organization).where(Organization.id == course.org_id)
     org = db_session.exec(statement).first()
 
-    # Check limits and usage
-    check_limits_with_usage("ai", course.org_id, db_session)
-    increase_feature_usage("ai", course.org_id, db_session)
+    # Check AI credits and deduct
+    check_ai_credits(course.org_id, db_session)
+    deduct_ai_credit(course.org_id, db_session)
 
     if not activity:
         raise HTTPException(
@@ -186,16 +262,17 @@ def ai_send_activity_chat_message(
     org_config = result.first()
 
     org_config = OrganizationConfig.model_validate(org_config)
-    embeddings = "text-embedding-ada-002"
-    ai_model = org_config.config["features"]["ai"]["model"]
+
+    # Use Gemini 2.5 Flash as the default model
+    ai_model = "gemini-2.5-flash"
 
     chat_session = get_chat_session_history(chat_session_object.aichat_uuid)
 
     message = "You are a helpful Education Assistant, and you are helping a student with the associated Course. "
-    message += "Use the available tools to get context about this question even if the question is not specific enough."
-    message += "For context, this is the Course name :"
+    message += "Use the course content provided to answer questions about the course material."
+    message += "For context, this is the Course name: "
     message += course.name
-    message += " and this is the Lecture name :"
+    message += " and this is the Lecture name: "
     message += activity.name
     message += "."
     message += "Use your knowledge to help the student if the context is not enough."
@@ -205,8 +282,14 @@ def ai_send_activity_chat_message(
         chat_session["message_history"],
         ai_friendly_text,
         message,
-        embeddings,
         ai_model,
+    )
+
+    # Save the message exchange to history
+    save_message_to_history(
+        chat_session["aichat_uuid"],
+        chat_session_object.message,
+        response["output"]
     )
 
     return ActivityAIChatSessionResponse(
@@ -214,3 +297,179 @@ def ai_send_activity_chat_message(
         activity_uuid=activity.activity_uuid,
         message=response["output"],
     )
+
+
+def _get_activity_and_course_info(
+    activity_uuid: str,
+    db_session: Session,
+) -> Tuple[ActivityRead, CourseRead, Organization, str, str]:
+    """
+    Helper function to get activity, course, and organization info with AI model.
+    Returns: (activity, course, org, ai_model, ai_friendly_text)
+    """
+    # Get the Activity
+    statement = select(Activity).where(Activity.activity_uuid == activity_uuid)
+    activity = db_session.exec(statement).first()
+
+    if not activity:
+        raise HTTPException(
+            status_code=404,
+            detail="Activity not found",
+        )
+
+    activity = ActivityRead.model_validate(activity)
+
+    # Get the Course with authors
+    statement = (
+        select(Course)
+        .join(Activity)
+        .where(Activity.activity_uuid == activity_uuid)
+    )
+    course = db_session.exec(statement).first()
+
+    if not course:
+        raise HTTPException(
+            status_code=404,
+            detail="Course not found",
+        )
+
+    # Get course authors
+    from src.db.resource_authors import ResourceAuthor
+    from src.db.users import User
+    from src.services.courses.courses import AuthorWithRole, UserRead
+
+    authors_statement = (
+        select(ResourceAuthor, User)
+        .join(User, ResourceAuthor.user_id == User.id)  # type: ignore
+        .where(ResourceAuthor.resource_uuid == course.course_uuid)
+        .order_by(ResourceAuthor.id.asc())  # type: ignore
+    )
+    author_results = db_session.exec(authors_statement).all()
+
+    # Convert to AuthorWithRole objects
+    authors = [
+        AuthorWithRole(
+            user=UserRead.model_validate(user),
+            authorship=resource_author.authorship,
+            authorship_status=resource_author.authorship_status,
+            creation_date=resource_author.creation_date,
+            update_date=resource_author.update_date
+        )
+        for resource_author, user in author_results
+    ]
+
+    course = CourseRead(**course.model_dump(), authors=authors)
+
+    # Get the Organization
+    statement = select(Organization).where(Organization.id == course.org_id)
+    org = db_session.exec(statement).first()
+
+    if not org or org.id is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Organization not found",
+        )
+
+    # Get Activity Content Blocks
+    content = activity.content
+
+    # Serialize Activity Content Blocks to a text comprehensible by the AI
+    structured = structure_activity_content_by_type(content)
+    isEmpty = structured == []
+    ai_friendly_text = serialize_activity_text_to_ai_comprehensible_text(
+        structured, course, activity, isActivityEmpty=isEmpty
+    )
+
+    # Get Organization Config
+    statement = select(OrganizationConfig).where(
+        OrganizationConfig.org_id == org.id  # type: ignore
+    )
+    result = db_session.exec(statement)
+    org_config = result.first()
+
+    org_config = OrganizationConfig.model_validate(org_config)
+
+    # Use Gemini 2.5 Flash as the default model
+    ai_model = "gemini-2.5-flash"
+
+    return activity, course, org, ai_model, ai_friendly_text
+
+
+async def ai_start_activity_chat_session_stream(
+    request: Request,
+    chat_session_object: StartActivityAIChatSession,
+    current_user: PublicUser,
+    db_session: Session,
+) -> Dict[str, Any]:
+    """
+    Start a new AI Chat session with streaming response.
+    Returns context needed for streaming.
+    """
+    activity, course, org, ai_model, ai_friendly_text = _get_activity_and_course_info(
+        chat_session_object.activity_uuid, db_session
+    )
+
+    # Check limits and usage
+    check_ai_credits(org.id, db_session)
+    deduct_ai_credit(org.id, db_session)
+
+    chat_session = get_chat_session_history()
+
+    message = "You are a helpful Education Assistant, and you are helping a student with the associated Course. "
+    message += "Use the course content provided to answer questions about the course material."
+    message += "For context, this is the Course name: "
+    message += course.name
+    message += " and this is the Lecture name: "
+    message += activity.name
+    message += "."
+    message += "Use your knowledge to help the student if the context is not enough."
+
+    return {
+        "chat_session": chat_session,
+        "activity": activity,
+        "course": course,
+        "ai_model": ai_model,
+        "ai_friendly_text": ai_friendly_text,
+        "message": message,
+        "user_message": chat_session_object.message,
+    }
+
+
+async def ai_send_activity_chat_message_stream(
+    request: Request,
+    chat_session_object: SendActivityAIChatMessage,
+    current_user: PublicUser,
+    db_session: Session,
+) -> Dict[str, Any]:
+    """
+    Send a message in an existing AI Chat session with streaming response.
+    Returns context needed for streaming.
+    """
+    activity, course, org, ai_model, ai_friendly_text = _get_activity_and_course_info(
+        chat_session_object.activity_uuid, db_session
+    )
+
+    # Check limits and usage
+    check_ai_credits(org.id, db_session)
+    deduct_ai_credit(org.id, db_session)
+
+    chat_session = get_chat_session_history(chat_session_object.aichat_uuid)
+
+    message = "You are a helpful Education Assistant, and you are helping a student with the associated Course. "
+    message += "Use the course content provided to answer questions about the course material."
+    message += "For context, this is the Course name: "
+    message += course.name
+    message += " and this is the Lecture name: "
+    message += activity.name
+    message += "."
+    message += "Use your knowledge to help the student if the context is not enough."
+
+    return {
+        "chat_session": chat_session,
+        "activity": activity,
+        "course": course,
+        "ai_model": ai_model,
+        "ai_friendly_text": ai_friendly_text,
+        "message": message,
+        "user_message": chat_session_object.message,
+    }

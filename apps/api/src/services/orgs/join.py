@@ -5,19 +5,20 @@ from pydantic import BaseModel
 from sqlmodel import Session, select
 from src.db.organizations import Organization
 from src.db.user_organizations import UserOrganization
-from src.db.users import AnonymousUser, PublicUser, User
+from src.db.users import AnonymousUser, InternalUser, PublicUser, User
 from src.security.features_utils.usage import (
     check_limits_with_usage,
     increase_feature_usage,
 )
 from src.services.orgs.invites import get_invite_code
 from src.services.orgs.orgs import get_org_join_mechanism
+from src.services.users.usergroups import add_users_to_usergroup
 
 
 class JoinOrg(BaseModel):
     org_id: int
     user_id: str
-    invite_code: Optional[str]
+    invite_code: Optional[str] = None
 
 
 async def join_org(
@@ -43,15 +44,21 @@ async def join_org(
         request, args.org_id, current_user, db_session
     )
 
-    # Get User
-    statement = select(User).where(User.id == args.user_id)
+    # Get User by UUID
+    statement = select(User).where(User.user_uuid == args.user_id)
     result = db_session.exec(statement)
 
     user = result.first()
 
+    if not user:
+        raise HTTPException(
+            status_code=404,
+            detail="User not found",
+        )
+
     # Check if User isn't already part of the org
     statement = select(UserOrganization).where(
-        UserOrganization.user_id == args.user_id, UserOrganization.org_id == args.org_id
+        UserOrganization.user_id == user.id, UserOrganization.org_id == args.org_id
     )
     result = db_session.exec(statement)
 
@@ -80,13 +87,25 @@ async def join_org(
             user_organization = UserOrganization(
                 user_id=user.id,
                 org_id=org.id,
-                role_id=3,
+                role_id=4,
                 creation_date=str(datetime.now()),
                 update_date=str(datetime.now()),
             )
 
             db_session.add(user_organization)
             db_session.commit()
+
+            # Add user to UserGroup if invite code is linked to one
+            if inviteCode.get("usergroup_id"):
+                await add_users_to_usergroup(
+                    request,
+                    db_session,
+                    InternalUser(id=0),
+                    int(inviteCode.get("usergroup_id")),
+                    str(user.id),
+                )
+
+            increase_feature_usage("members", org.id, db_session)
 
             return "Great, You're part of the Organization"
 
@@ -102,7 +121,7 @@ async def join_org(
             user_organization = UserOrganization(
                 user_id=user.id,
                 org_id=org.id,
-                role_id=3,
+                role_id=4,
                 creation_date=str(datetime.now()),
                 update_date=str(datetime.now()),
             )

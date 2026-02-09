@@ -1,9 +1,9 @@
 'use client';
-import DashLeftMenu from '@components/Dashboard/UI/DashLeftMenu'
-import DashMobileMenu from '@components/Dashboard/UI/DashMobileMenu'
+import DashLeftMenu from '@components/Dashboard/Menus/DashLeftMenu';
+import DashMobileMenu from '@components/Dashboard/Menus/DashMobileMenu';
 import AdminAuthorization from '@components/Security/AdminAuthorization'
-import { SessionProvider } from 'next-auth/react'
-import React, { useState, useEffect } from 'react'
+import { SessionProvider } from '@components/Contexts/AuthContext'
+import React from 'react'
 import { useMediaQuery } from 'usehooks-ts';
 
 function ClientAdminLayout({
@@ -24,7 +24,7 @@ function ClientAdminLayout({
                     ) : (
                         <DashLeftMenu />
                     )}
-                    <div className="flex w-full">{children}</div>
+                    <div className="flex w-full relative isolate">{children}</div>
                 </div>
             </AdminAuthorization>
         </SessionProvider>

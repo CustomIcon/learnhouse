@@ -3,7 +3,7 @@ FROM node:22-alpine AS base
 # Install dependencies only when needed
 FROM base AS deps
 # Check https://github.com/nodejs/docker-node/tree/b4117f9333da4138b03a546ec926ef50a31506c3#nodealpine to understand why libc6-compat might be needed.
-RUN apk add --no-cache libc6-compat
+RUN apk update && apk add --no-cache libc6-compat && rm -rf /var/cache/apk/*
 WORKDIR /app
 
 # Install dependencies based on the preferred package manager
@@ -39,17 +39,17 @@ RUN \
 FROM base AS runner
 WORKDIR /app
 
-# Install curl 
-RUN apk add --no-cache curl
+# Install curl for health checks
+RUN apk update && apk add --no-cache curl && rm -rf /var/cache/apk/*
 
 ENV NODE_ENV production
 # Uncomment the following line in case you want to disable telemetry during runtime.
-# ENV NEXT_TELEMETRY_DISABLED 1
+ENV NEXT_TELEMETRY_DISABLED 1
 
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 nextjs
 
-COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/public ./public
 
 # Set the correct permission for prerender cache
 RUN mkdir .next
@@ -60,12 +60,23 @@ RUN chown nextjs:nodejs .next
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
 COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
 
+# Copy server wrapper for runtime environment variable injection
+COPY --chown=nextjs:nodejs server-wrapper.js ./
+RUN chmod +x server-wrapper.js
+
+# Copy entrypoint script
+COPY --chown=nextjs:nodejs docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
+
+# Create runtime config placeholders (will be generated at startup by server-wrapper.js)
+# Remove stale build-time runtime-config.js to ensure fresh runtime values
+RUN rm -f public/runtime-config.js && touch runtime-config.json && chown nextjs:nodejs runtime-config.json
+
 USER nextjs
 
 EXPOSE 3000
 
 ENV PORT 3000
 
-# server.js is created by next build from the standalone output
-# https://nextjs.org/docs/pages/api-reference/next-config-js/output
-CMD HOSTNAME="0.0.0.0" node server.js
+# Use entrypoint script which will start the server with runtime env vars
+ENTRYPOINT ["./docker-entrypoint.sh"]

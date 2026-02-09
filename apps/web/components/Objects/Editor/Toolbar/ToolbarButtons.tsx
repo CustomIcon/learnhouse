@@ -12,6 +12,7 @@ import {
   ColumnsIcon,
   SectionIcon,
   ContainerIcon,
+  ChevronDownIcon,
 } from '@radix-ui/react-icons'
 import {
   AlertCircle,
@@ -21,132 +22,291 @@ import {
   Cuboid,
   FileText,
   ImagePlus,
-  Lightbulb,
+  Link2,
   MousePointerClick,
+  RotateCw,
   Sigma,
-  Tag,
   Tags,
+  User,
   Video,
+  List,
+  ListOrdered,
+  Globe,
+  GitBranch,
 } from 'lucide-react'
 import { SiYoutube } from '@icons-pack/react-simple-icons'
-import ToolTip from '@components/StyledElements/Tooltip/Tooltip'
+import ToolTip from '@components/Objects/StyledElements/Tooltip/Tooltip'
+import React from 'react'
+import Image from 'next/image'
+import LinkInputTooltip from './LinkInputTooltip'
+import lrnaiIcon from 'public/lrnai_icon.png'
+import { useOrg } from '@components/Contexts/OrgContext'
+import { PlanLevel, planMeetsRequirement } from '@services/plans/plans'
+import { useTranslation } from 'react-i18next'
 
 export const ToolbarButtons = ({ editor, props }: any) => {
+  const { t } = useTranslation()
+  const [showTableMenu, setShowTableMenu] = React.useState(false)
+  const [showListMenu, setShowListMenu] = React.useState(false)
+  const [showLinkInput, setShowLinkInput] = React.useState(false)
+  const linkButtonRef = React.useRef<HTMLDivElement>(null)
+
+  // Get current plan for AI feature restrictions
+  const orgContext = useOrg() as any
+  const currentPlan: PlanLevel = orgContext?.config?.config?.cloud?.plan || 'free'
+  const canUseAI = planMeetsRequirement(currentPlan, 'standard')
+
   if (!editor) {
     return null
   }
 
-  // YouTube extension
-  const addYoutubeVideo = () => {
-    const url = prompt('Enter YouTube URL')
 
-    if (url) {
-      editor.commands.setYoutubeVideo({
-        src: url,
-        width: 640,
-        height: 480,
-      })
+  const tableOptions = [
+    {
+      label: t('editor.toolbar.insert_table'),
+      icon: <TableIcon />,
+      action: () => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()
+    },
+    {
+      label: t('editor.toolbar.add_row'),
+      icon: <RowsIcon />,
+      action: () => editor.chain().focus().addRowAfter().run()
+    },
+    {
+      label: t('editor.toolbar.add_column'),
+      icon: <ColumnsIcon />,
+      action: () => editor.chain().focus().addColumnAfter().run()
+    },
+    {
+      label: t('editor.toolbar.delete_row'),
+      icon: <SectionIcon />,
+      action: () => editor.chain().focus().deleteRow().run()
+    },
+    {
+      label: t('editor.toolbar.delete_column'),
+      icon: <ContainerIcon />,
+      action: () => editor.chain().focus().deleteColumn().run()
     }
+  ]
+
+  const listOptions = [
+    {
+      label: t('editor.toolbar.bullet_list'),
+      icon: <List size={15} />,
+      action: () => {
+        if (editor.isActive('bulletList')) {
+          editor.chain().focus().toggleBulletList().run()
+        } else {
+          editor.chain().focus().toggleOrderedList().run()
+          editor.chain().focus().toggleBulletList().run()
+        }
+      }
+    },
+    {
+      label: t('editor.toolbar.ordered_list'),
+      icon: <ListOrdered size={15} />,
+      action: () => {
+        if (editor.isActive('orderedList')) {
+          editor.chain().focus().toggleOrderedList().run()
+        } else {
+          editor.chain().focus().toggleBulletList().run()
+          editor.chain().focus().toggleOrderedList().run()
+        }
+      }
+    }
+  ]
+
+  const handleLinkClick = () => {
+    // Store the current selection
+    const { from, to } = editor.state.selection
+    
+    if (editor.isActive('link')) {
+      const currentLink = editor.getAttributes('link')
+      setShowLinkInput(true)
+    } else {
+      setShowLinkInput(true)
+    }
+
+    // Restore the selection after a small delay to ensure the tooltip is rendered
+    setTimeout(() => {
+      editor.commands.setTextSelection({ from, to })
+    }, 0)
+  }
+
+  const getCurrentLinkUrl = () => {
+    if (editor.isActive('link')) {
+      return editor.getAttributes('link').href
+    }
+    return ''
+  }
+
+  const handleLinkSave = (url: string) => {
+    editor
+      .chain()
+      .focus()
+      .setLink({ 
+        href: url,
+        target: '_blank',
+        rel: 'noopener noreferrer'
+      })
+      .run()
+    setShowLinkInput(false)
+  }
+
+  const handleLinkCancel = () => {
+    setShowLinkInput(false)
   }
 
   return (
     <ToolButtonsWrapper>
-      <ToolBtn onClick={() => editor.chain().focus().undo().run()}>
+      <ToolBtn onClick={() => editor.chain().focus().undo().run()} aria-label="Undo last action">
         <ArrowLeftIcon />
       </ToolBtn>
-      <ToolBtn onClick={() => editor.chain().focus().redo().run()}>
+      <ToolBtn onClick={() => editor.chain().focus().redo().run()} aria-label="Redo last action">
         <ArrowRightIcon />
       </ToolBtn>
       <ToolBtn
         onClick={() => editor.chain().focus().toggleBold().run()}
         className={editor.isActive('bold') ? 'is-active' : ''}
+        aria-label="Toggle bold formatting"
       >
         <FontBoldIcon />
       </ToolBtn>
       <ToolBtn
         onClick={() => editor.chain().focus().toggleItalic().run()}
         className={editor.isActive('italic') ? 'is-active' : ''}
+        aria-label="Toggle italic formatting"
       >
         <FontItalicIcon />
       </ToolBtn>
       <ToolBtn
         onClick={() => editor.chain().focus().toggleStrike().run()}
         className={editor.isActive('strike') ? 'is-active' : ''}
+        aria-label="Toggle strikethrough formatting"
       >
         <StrikethroughIcon />
       </ToolBtn>
-      <ToolBtn
-        onClick={() => editor.chain().focus().toggleOrderedList().run()}
-        className={editor.isActive('orderedList') ? 'is-active' : ''}
-      >
-        <ListBulletIcon />
-      </ToolBtn>
-      <ToolSelect
-        onChange={(e) =>
-          editor
-            .chain()
-            .focus()
-            .toggleHeading({ level: parseInt(e.target.value) })
-            .run()
-        }
-      >
-        <option value="1">Heading 1</option>
-        <option value="2">Heading 2</option>
-        <option value="3">Heading 3</option>
-        <option value="4">Heading 4</option>
-        <option value="5">Heading 5</option>
-        <option value="6">Heading 6</option>
-      </ToolSelect>
-      <DividerVerticalIcon
-        style={{ marginTop: 'auto', marginBottom: 'auto', color: 'grey' }}
-      />
-      <ToolBtn content={'Create table'}
-        onClick={() => editor.chain().focus().insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()}
-      >
-        <TableIcon/>
-      </ToolBtn>
-      <ToolBtn content={'Insert row'}
-        onClick={() => editor.chain().focus().addRowAfter().run()}
-      >
-        <RowsIcon/>
-      </ToolBtn>
-      <ToolBtn content={'Insert column'}
-        onClick={() => editor.chain().focus().addColumnAfter().run()}
-      >
-        <ColumnsIcon/>
-      </ToolBtn>
-      <ToolBtn content={'Remove column'}
-        onClick={() => editor.chain().focus().deleteColumn().run()}
-      >
-        <ContainerIcon/>
-      </ToolBtn>
-      <ToolBtn content={'Remove row'}
-        onClick={() => editor.chain().focus().deleteRow().run()}
-      >
-        <SectionIcon/>
-      </ToolBtn>
-      {/* TODO: fix this : toggling only works one-way */}
-      <DividerVerticalIcon
-        style={{ marginTop: 'auto', marginBottom: 'auto', color: 'grey' }}
-      />
-      <ToolTip content={'Info Callout'}>
+      <ListMenuWrapper>
         <ToolBtn
+          onClick={() => setShowListMenu(!showListMenu)}
+          className={showListMenu || editor.isActive('bulletList') || editor.isActive('orderedList') ? 'is-active' : ''}
+          aria-label="Insert list"
+        >
+          <ListBulletIcon />
+          <ChevronDownIcon />
+        </ToolBtn>
+        {showListMenu && (
+          <ListDropdown>
+            {listOptions.map((option, index) => (
+              <ListMenuItem
+                key={index}
+                onClick={() => {
+                  option.action()
+                  setShowListMenu(false)
+                }}
+                className={editor.isActive(index === 0 ? 'bulletList' : 'orderedList') ? 'is-active' : ''}
+              >
+                <span className="icon">{option.icon}</span>
+                <span className="label">{option.label}</span>
+              </ListMenuItem>
+            ))}
+          </ListDropdown>
+        )}
+      </ListMenuWrapper>
+      <ToolSelect
+        value={
+          editor.isActive('heading', { level: 1 }) ? "1" :
+          editor.isActive('heading', { level: 2 }) ? "2" :
+          editor.isActive('heading', { level: 3 }) ? "3" :
+          editor.isActive('heading', { level: 4 }) ? "4" :
+          editor.isActive('heading', { level: 5 }) ? "5" :
+          editor.isActive('heading', { level: 6 }) ? "6" : "0"
+        }
+        onChange={(e) => {
+          const value = e.target.value;
+          if (value === "0") {
+            editor.chain().focus().setParagraph().run();
+          } else {
+            editor.chain().focus().toggleHeading({ level: parseInt(value) }).run();
+          }
+        }}
+      >
+        <option value="0">{t('editor.toolbar.paragraph')}</option>
+        <option value="1">{t('editor.toolbar.heading1')}</option>
+        <option value="2">{t('editor.toolbar.heading2')}</option>
+        <option value="3">{t('editor.toolbar.heading3')}</option>
+        <option value="4">{t('editor.toolbar.heading4')}</option>
+        <option value="5">{t('editor.toolbar.heading5')}</option>
+        <option value="6">{t('editor.toolbar.heading6')}</option>
+      </ToolSelect>
+      <TableMenuWrapper>
+        <ToolBtn
+          onClick={() => setShowTableMenu(!showTableMenu)}
+          className={showTableMenu ? 'is-active' : ''}
+          aria-label="Insert table"
+        >
+          <TableIcon width={18} />
+          <ChevronDownIcon  />
+        </ToolBtn>
+        {showTableMenu && (
+          <TableDropdown>
+            {tableOptions.map((option, index) => (
+              <TableMenuItem 
+                key={index}
+                onClick={() => {
+                  option.action()
+                  setShowTableMenu(false)
+                }}
+              >
+                <span className="icon">{option.icon}</span>
+                <span className="label">{option.label}</span>
+              </TableMenuItem>
+            ))}
+          </TableDropdown>
+        )}
+      </TableMenuWrapper>
+      <DividerVerticalIcon
+        style={{ marginTop: 'auto', marginBottom: 'auto', color: 'grey' }}
+      />
+      <ToolTip content={t('editor.blocks.info_callout')}>
+        <ToolBtnInfo
           onClick={() => editor.chain().focus().toggleNode('calloutInfo').run()}
+          aria-label={t('editor.blocks.info_callout')}
         >
           <AlertCircle size={15} />
-        </ToolBtn>
+        </ToolBtnInfo>
       </ToolTip>
-      <ToolTip content={'Warning Callout'}>
-        <ToolBtn
+      <ToolTip content={t('editor.blocks.warning_callout')}>
+        <ToolBtnWarning
           onClick={() =>
             editor.chain().focus().toggleNode('calloutWarning').run()
           }
+          aria-label={t('editor.blocks.warning_callout')}
         >
           <AlertTriangle size={15} />
-        </ToolBtn>
+        </ToolBtnWarning>
       </ToolTip>
-      <ToolTip content={'Image'}>
-        <ToolBtn
+      <ToolTip content={t('editor.toolbar.link')}>
+        <div style={{ position: 'relative' }}>
+          <ToolBtnLink
+            ref={linkButtonRef}
+            onClick={handleLinkClick}
+            className={editor.isActive('link') ? 'is-active' : ''}
+            aria-label={t('editor.toolbar.link')}
+          >
+            <Link2 size={15} />
+          </ToolBtnLink>
+          {showLinkInput && (
+            <LinkInputTooltip
+              onSave={handleLinkSave}
+              onCancel={handleLinkCancel}
+              currentUrl={getCurrentLinkUrl()}
+            />
+          )}
+        </div>
+      </ToolTip>
+      <ToolTip content={t('editor.blocks.image')}>
+        <ToolBtnMedia
           onClick={() =>
             editor
               .chain()
@@ -156,12 +316,13 @@ export const ToolbarButtons = ({ editor, props }: any) => {
               })
               .run()
           }
+          aria-label={t('editor.blocks.image')}
         >
           <ImagePlus size={15} />
-        </ToolBtn>
+        </ToolBtnMedia>
       </ToolTip>
-      <ToolTip content={'Video'}>
-        <ToolBtn
+      <ToolTip content={t('editor.blocks.video')}>
+        <ToolBtnMedia
           onClick={() =>
             editor
               .chain()
@@ -171,17 +332,18 @@ export const ToolbarButtons = ({ editor, props }: any) => {
               })
               .run()
           }
+          aria-label={t('editor.blocks.video')}
         >
           <Video size={15} />
-        </ToolBtn>
+        </ToolBtnMedia>
       </ToolTip>
-      <ToolTip content={'YouTube video'}>
-        <ToolBtn onClick={() => addYoutubeVideo()}>
+      <ToolTip content={t('editor.blocks.youtube')}>
+        <ToolBtnMedia onClick={() => editor.chain().focus().insertContent({ type: 'blockEmbed' }).run()} aria-label={t('editor.blocks.youtube')}>
           <SiYoutube size={15} />
-        </ToolBtn>
+        </ToolBtnMedia>
       </ToolTip>
-      <ToolTip content={'Math Equation (LaTeX)'}>
-        <ToolBtn
+      <ToolTip content={t('editor.blocks.math')}>
+        <ToolBtnMath
           onClick={() =>
             editor
               .chain()
@@ -191,12 +353,13 @@ export const ToolbarButtons = ({ editor, props }: any) => {
               })
               .run()
           }
+          aria-label={t('editor.blocks.math')}
         >
           <Sigma size={15} />
-        </ToolBtn>
+        </ToolBtnMath>
       </ToolTip>
-      <ToolTip content={'PDF Document'}>
-        <ToolBtn
+      <ToolTip content={t('editor.blocks.pdf')}>
+        <ToolBtnDocument
           onClick={() =>
             editor
               .chain()
@@ -206,12 +369,13 @@ export const ToolbarButtons = ({ editor, props }: any) => {
               })
               .run()
           }
+          aria-label={t('editor.blocks.pdf')}
         >
           <FileText size={15} />
-        </ToolBtn>
+        </ToolBtnDocument>
       </ToolTip>
-      <ToolTip content={'Interactive Quiz'}>
-        <ToolBtn
+      <ToolTip content={t('editor.blocks.quiz')}>
+        <ToolBtnInteractive
           onClick={() =>
             editor
               .chain()
@@ -221,54 +385,161 @@ export const ToolbarButtons = ({ editor, props }: any) => {
               })
               .run()
           }
+          aria-label={t('editor.blocks.quiz')}
         >
           <BadgeHelp size={15} />
-        </ToolBtn>
+        </ToolBtnInteractive>
       </ToolTip>
-      <ToolTip content={'Code Block'}>
-        <ToolBtn
+      <ToolTip content={t('editor.toolbar.code_block')}>
+        <ToolBtnCode
           onClick={() => editor.chain().focus().toggleCodeBlock().run()}
           className={editor.isActive('codeBlock') ? 'is-active' : ''}
+          aria-label={t('editor.toolbar.code_block')}
         >
           <Code size={15} />
-        </ToolBtn>
+        </ToolBtnCode>
       </ToolTip>
-      <ToolTip content={'External Object (Embed)'}>
-        <ToolBtn
+      <ToolTip content={t('editor.blocks.embed')}>
+        <ToolBtnEmbed
           onClick={() => editor.chain().focus().insertContent({ type: 'blockEmbed' }).run()}
+          aria-label={t('editor.blocks.embed')}
         >
           <Cuboid size={15} />
-        </ToolBtn>
+        </ToolBtnEmbed>
       </ToolTip>
-      <ToolTip content={'Badges'}>
-        <ToolBtn
+      <ToolTip content={t('editor.blocks.badge')}>
+        <ToolBtnBadge
           onClick={() => editor.chain().focus().insertContent({
             type: 'badge',
             content: [
               {
                 type: 'text',
-                text: 'This is a Badge'
+                text: 'Badge'
               }
             ]
           }).run()}
+          aria-label={t('editor.blocks.badge')}
         >
           <Tags size={15} />
-        </ToolBtn>
+        </ToolBtnBadge>
       </ToolTip>
-      <ToolTip content={'Button'}>
-        <ToolBtn
+      <ToolTip content={t('editor.blocks.button')}>
+        <ToolBtnInteractive
           onClick={() => editor.chain().focus().insertContent({
             type: 'button',
             content: [
               {
                 type: 'text',
-                text: 'Click me'
+                text: 'Button'
               }
             ]
           }).run()}
+          aria-label={t('editor.blocks.button')}
         >
           <MousePointerClick size={15} />
-        </ToolBtn>
+        </ToolBtnInteractive>
+      </ToolTip>
+      <ToolTip content={t('editor.blocks.user')}>
+        <ToolBtnUser
+          onClick={() => editor.chain().focus().insertContent({ type: 'blockUser' }).run()}
+          aria-label={t('editor.blocks.user')}
+        >
+          <User size={15} />
+        </ToolBtnUser>
+      </ToolTip>
+      <ToolTip content={t('editor.blocks.web_preview')}>
+        <ToolBtnWeb
+          onClick={() =>
+            editor.chain().focus().insertContent({
+              type: 'blockWebPreview',
+            }).run()
+          }
+          aria-label={t('editor.blocks.web_preview')}
+        >
+          <Globe size={15} />
+        </ToolBtnWeb>
+      </ToolTip>
+      <ToolTip content={t('editor.blocks.flipcard')}>
+        <ToolBtnInteractive
+          onClick={() =>
+            editor.chain().focus().insertContent({
+              type: 'flipcard',
+              attrs: {
+                question: 'Click to reveal the answer',
+                answer: 'This is the answer',
+                color: 'blue',
+                alignment: 'center',
+                size: 'medium'
+              }
+            }).run()
+          }
+          aria-label={t('editor.blocks.flipcard')}
+        >
+          <RotateCw size={15} />
+        </ToolBtnInteractive>
+      </ToolTip>
+      <ToolTip content={t('editor.blocks.scenario')}>
+        <ToolBtnInteractive
+          onClick={() =>
+            editor.chain().focus().insertContent({
+              type: 'scenarios',
+              attrs: {
+                title: 'Interactive Scenario',
+                scenarios: [
+                  {
+                    id: '1',
+                    text: 'Welcome to this interactive scenario. What would you like to do?',
+                    imageUrl: '',
+                    options: [
+                      { id: 'opt1', text: 'Continue exploring', nextScenarioId: '2' },
+                      { id: 'opt2', text: 'Learn more about the topic', nextScenarioId: '3' }
+                    ]
+                  },
+                  {
+                    id: '2',
+                    text: 'Great choice! You are now exploring further. What\'s your next step?',
+                    imageUrl: '',
+                    options: [
+                      { id: 'opt3', text: 'Go back to start', nextScenarioId: '1' },
+                      { id: 'opt4', text: 'Finish scenario', nextScenarioId: null }
+                    ]
+                  },
+                  {
+                    id: '3',
+                    text: 'Here\'s more information about the topic. This helps you understand better.',
+                    imageUrl: '',
+                    options: [
+                      { id: 'opt5', text: 'Go back to start', nextScenarioId: '1' },
+                      { id: 'opt6', text: 'Finish scenario', nextScenarioId: null }
+                    ]
+                  }
+                ],
+                currentScenarioId: '1'
+              }
+            }).run()
+          }
+          aria-label={t('editor.blocks.scenario')}
+        >
+          <GitBranch size={15} />
+        </ToolBtnInteractive>
+      </ToolTip>
+      <ToolTip content={canUseAI ? t('editor.blocks.magic_block') : t('editor.blocks.magic_block_disabled')}>
+        {canUseAI ? (
+          <ToolBtnMagic
+            onClick={() =>
+              editor.chain().focus().insertContent({
+                type: 'blockMagic',
+              }).run()
+            }
+            aria-label={t('editor.blocks.magic_block')}
+          >
+            <Image src={lrnaiIcon} alt="Magic Block" width={15} height={15} />
+          </ToolBtnMagic>
+        ) : (
+          <ToolBtnMagicDisabled aria-label={t('editor.blocks.magic_block_disabled')}>
+            <Image src={lrnaiIcon} alt="Magic Block" width={15} height={15} />
+          </ToolBtnMagicDisabled>
+        )}
       </ToolTip>
     </ToolButtonsWrapper>
   )
@@ -277,48 +548,398 @@ export const ToolbarButtons = ({ editor, props }: any) => {
 const ToolButtonsWrapper = styled.div`
   display: flex;
   flex-direction: row;
-  align-items: left;
-  justify-content: left;
+  align-items: center;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+  gap: 7px;
+
+  @media (max-width: 1200px) {
+    gap: 5px;
+  }
 `
 
 const ToolBtn = styled.div`
   display: flex;
-  background: rgba(217, 217, 217, 0.24);
+  align-items: center;
+  justify-content: center;
+  background: white;
   border-radius: 6px;
-  width: 25px;
+  min-width: 25px;
   height: 25px;
   padding: 5px;
-  margin-right: 5px;
   transition: all 0.2s ease-in-out;
+  flex-shrink: 0;
+  color: #6b7280;
+  box-shadow: 0 4px 6px -1px rgba(209, 213, 219, 0.25), 0 2px 4px -2px rgba(209, 213, 219, 0.25);
+  outline: 1px solid rgba(229, 231, 235, 0.4);
 
   svg {
     padding: 1px;
   }
 
   &.is-active {
-    background: rgba(176, 176, 176, 0.5);
+    background: #f3f4f6;
+    color: #1f2937;
+    outline: 1px solid rgba(107, 114, 128, 0.3);
 
     &:hover {
-      background: rgba(139, 139, 139, 0.5);
+      background: #e5e7eb;
       cursor: pointer;
     }
   }
 
   &:hover {
-    background: rgba(217, 217, 217, 0.48);
+    background: #f9fafb;
     cursor: pointer;
+  }
+
+  @media (max-width: 1200px) {
+    min-width: 24px;
+    height: 24px;
+    padding: 4px;
+  }
+`
+
+// Info Callout button - blue tint
+const ToolBtnInfo = styled(ToolBtn)`
+  background: rgba(59, 130, 246, 0.06);
+  color: rgb(59, 130, 246);
+  outline: 1px solid rgba(59, 130, 246, 0.1);
+
+  &:hover {
+    background: rgba(59, 130, 246, 0.12);
+  }
+`
+
+// Warning Callout button - amber tint
+const ToolBtnWarning = styled(ToolBtn)`
+  background: rgba(245, 158, 11, 0.06);
+  color: rgb(217, 119, 6);
+  outline: 1px solid rgba(245, 158, 11, 0.12);
+
+  &:hover {
+    background: rgba(245, 158, 11, 0.12);
+  }
+`
+
+// Link button - blue tint
+const ToolBtnLink = styled(ToolBtn)`
+  background: rgba(59, 130, 246, 0.06);
+  color: rgb(59, 130, 246);
+  outline: 1px solid rgba(59, 130, 246, 0.1);
+
+  &.is-active {
+    background: rgba(59, 130, 246, 0.18);
+    color: rgb(37, 99, 235);
+    outline: 1px solid rgba(59, 130, 246, 0.25);
+
+    &:hover {
+      background: rgba(59, 130, 246, 0.24);
+    }
+  }
+
+  &:hover {
+    background: rgba(59, 130, 246, 0.12);
+  }
+`
+
+// Media buttons (Image, Video, YouTube) - purple/violet tint
+const ToolBtnMedia = styled(ToolBtn)`
+  background: rgba(139, 92, 246, 0.06);
+  color: rgb(124, 58, 237);
+  outline: 1px solid rgba(139, 92, 246, 0.1);
+
+  &:hover {
+    background: rgba(139, 92, 246, 0.12);
+  }
+`
+
+// Math Equation button - amber/orange tint
+const ToolBtnMath = styled(ToolBtn)`
+  background: rgba(251, 146, 60, 0.06);
+  color: rgb(234, 88, 12);
+  outline: 1px solid rgba(251, 146, 60, 0.12);
+
+  &:hover {
+    background: rgba(251, 146, 60, 0.12);
+  }
+`
+
+// PDF/Document button - rose tint
+const ToolBtnDocument = styled(ToolBtn)`
+  background: rgba(244, 63, 94, 0.06);
+  color: rgb(244, 63, 94);
+  outline: 1px solid rgba(244, 63, 94, 0.1);
+
+  &:hover {
+    background: rgba(244, 63, 94, 0.12);
+  }
+`
+
+// Interactive buttons (Quiz, Flipcard, Scenarios, Button) - green tint
+const ToolBtnInteractive = styled(ToolBtn)`
+  background: rgba(34, 197, 94, 0.06);
+  color: rgb(22, 163, 74);
+  outline: 1px solid rgba(34, 197, 94, 0.1);
+
+  &:hover {
+    background: rgba(34, 197, 94, 0.12);
+  }
+`
+
+// Code button - slate tint
+const ToolBtnCode = styled(ToolBtn)`
+  background: rgba(100, 116, 139, 0.06);
+  color: rgb(71, 85, 105);
+  outline: 1px solid rgba(100, 116, 139, 0.1);
+
+  &.is-active {
+    background: rgba(100, 116, 139, 0.18);
+    color: rgb(51, 65, 85);
+    outline: 1px solid rgba(100, 116, 139, 0.25);
+
+    &:hover {
+      background: rgba(100, 116, 139, 0.24);
+    }
+  }
+
+  &:hover {
+    background: rgba(100, 116, 139, 0.12);
+  }
+`
+
+// Embed/External button - cyan/teal tint
+const ToolBtnEmbed = styled(ToolBtn)`
+  background: rgba(20, 184, 166, 0.06);
+  color: rgb(13, 148, 136);
+  outline: 1px solid rgba(20, 184, 166, 0.1);
+
+  &:hover {
+    background: rgba(20, 184, 166, 0.12);
+  }
+`
+
+// Badges button - pink tint
+const ToolBtnBadge = styled(ToolBtn)`
+  background: rgba(236, 72, 153, 0.06);
+  color: rgb(219, 39, 119);
+  outline: 1px solid rgba(236, 72, 153, 0.1);
+
+  &:hover {
+    background: rgba(236, 72, 153, 0.12);
+  }
+`
+
+// User button - indigo tint
+const ToolBtnUser = styled(ToolBtn)`
+  background: rgba(99, 102, 241, 0.06);
+  color: rgb(79, 70, 229);
+  outline: 1px solid rgba(99, 102, 241, 0.1);
+
+  &:hover {
+    background: rgba(99, 102, 241, 0.12);
+  }
+`
+
+// Web Preview button - sky blue tint
+const ToolBtnWeb = styled(ToolBtn)`
+  background: rgba(14, 165, 233, 0.06);
+  color: rgb(2, 132, 199);
+  outline: 1px solid rgba(14, 165, 233, 0.1);
+
+  &:hover {
+    background: rgba(14, 165, 233, 0.12);
+  }
+`
+
+// Magic Block button - rotating gradient (same as AI Editor button)
+const ToolBtnMagic = styled(ToolBtn)`
+  @keyframes rotateGradient {
+    from {
+      --gradient-angle: 32deg;
+    }
+    to {
+      --gradient-angle: 392deg;
+    }
+  }
+
+  @property --gradient-angle {
+    syntax: '<angle>';
+    initial-value: 32deg;
+    inherits: false;
+  }
+
+  position: relative;
+  background: conic-gradient(from var(--gradient-angle) at 53.75% 50%, rgb(35, 40, 93) 4deg, rgba(20, 0, 52, 0.95) 59deg, rgba(164, 45, 238, 0.88) 281deg);
+  color: white;
+  outline: none;
+  border-radius: 6px;
+  animation: rotateGradient 20s linear infinite;
+  box-shadow: 0 2px 8px -2px rgba(164, 45, 238, 0.4);
+  padding: 6px;
+
+  &:hover {
+    background: conic-gradient(from var(--gradient-angle) at 53.75% 50%, rgb(35, 40, 93) 4deg, rgba(20, 0, 52, 0.95) 59deg, rgba(164, 45, 238, 0.88) 281deg);
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px -2px rgba(164, 45, 238, 0.5);
+    cursor: pointer;
+  }
+
+  img {
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.3));
+  }
+`
+
+// Magic Block button disabled state - grayed out gradient
+const ToolBtnMagicDisabled = styled(ToolBtnMagic)`
+  filter: grayscale(100%);
+  opacity: 0.5;
+  cursor: not-allowed;
+
+  &:hover {
+    transform: none;
+    cursor: not-allowed;
   }
 `
 
 const ToolSelect = styled.select`
   display: flex;
-  background: rgba(217, 217, 217, 0.185);
+  background-color: white;
   border-radius: 6px;
-  width: 100px;
+  width: 120px;
   border: none;
   height: 25px;
-  padding: 5px;
+  padding: 2px 5px;
   font-size: 11px;
-  font-family: 'DM Sans';
-  margin-right: 5px;
+  font-family: inherit;
+  cursor: pointer;
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  color: #6b7280;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236b7280' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 5px center;
+  background-size: 12px;
+  padding-right: 20px;
+  flex-shrink: 0;
+  transition: all 0.2s ease-in-out;
+  box-shadow: 0 4px 6px -1px rgba(209, 213, 219, 0.25), 0 2px 4px -2px rgba(209, 213, 219, 0.25);
+  outline: 1px solid rgba(229, 231, 235, 0.4);
+
+  &:hover {
+    background-color: #f9fafb;
+  }
+
+  &:focus {
+    outline: 1px solid rgba(107, 114, 128, 0.3);
+  }
+
+  @media (max-width: 1200px) {
+    width: 100px;
+    height: 24px;
+    font-size: 10px;
+  }
+`
+
+const TableMenuWrapper = styled.div`
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+`
+
+const TableDropdown = styled.div`
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: white;
+  border-radius: 6px;
+  z-index: var(--z-tooltip);
+  min-width: 180px;
+  margin-top: 4px;
+  padding: 4px;
+  box-shadow: 0 4px 6px -1px rgba(209, 213, 219, 0.25), 0 2px 4px -2px rgba(209, 213, 219, 0.25);
+  outline: 1px solid rgba(229, 231, 235, 0.4);
+`
+
+const TableMenuItem = styled.div`
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+  border-radius: 4px;
+  color: #4b5563;
+
+  &:hover {
+    background: rgba(243, 244, 246, 1);
+  }
+
+  .icon {
+    margin-right: 8px;
+    display: flex;
+    align-items: center;
+    color: #6b7280;
+  }
+
+  .label {
+    font-size: 12px;
+    font-family: inherit;
+  }
+`
+
+const ListMenuWrapper = styled.div`
+  position: relative;
+  display: inline-block;
+  flex-shrink: 0;
+`
+
+const ListDropdown = styled.div`
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background: white;
+  border-radius: 6px;
+  z-index: var(--z-tooltip);
+  min-width: 180px;
+  margin-top: 4px;
+  padding: 4px;
+  box-shadow: 0 4px 6px -1px rgba(209, 213, 219, 0.25), 0 2px 4px -2px rgba(209, 213, 219, 0.25);
+  outline: 1px solid rgba(229, 231, 235, 0.4);
+`
+
+const ListMenuItem = styled.div`
+  display: flex;
+  align-items: center;
+  padding: 8px 12px;
+  cursor: pointer;
+  transition: background 0.2s;
+  border-radius: 4px;
+  color: #4b5563;
+
+  &:hover {
+    background: rgba(243, 244, 246, 1);
+  }
+
+  &.is-active {
+    background: rgba(243, 244, 246, 1);
+    color: #111827;
+    font-weight: 500;
+  }
+
+  .icon {
+    margin-right: 8px;
+    display: flex;
+    align-items: center;
+    color: #6b7280;
+  }
+
+  &.is-active .icon {
+    color: #374151;
+  }
+
+  .label {
+    font-size: 12px;
+    font-family: inherit;
+  }
 `

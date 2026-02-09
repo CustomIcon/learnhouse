@@ -1,5 +1,6 @@
 import { getAPIUrl } from '@services/config/config'
 import {
+  RequestBodyFormWithAuthHeader,
   RequestBodyWithAuthHeader,
   errorHandling,
   getResponseMetadata,
@@ -44,13 +45,13 @@ export async function getOrganizationContextInfo(
   return res
 }
 
-export async function getOrganizationContextInfoWithId(
-  org_id: any,
+export async function getOrganizationContextInfoWithUUID(
+  org_uuid: string,
   next: any,
-  access_token: string
+  access_token?: string
 ) {
   const result = await fetch(
-    `${getAPIUrl()}orgs/${org_id}`,
+    `${getAPIUrl()}orgs/uuid/${org_uuid}`,
     RequestBodyWithAuthHeader('GET', null, next, access_token)
   )
   const res = await errorHandling(result)
@@ -101,6 +102,35 @@ export async function updateUserRole(
   return res
 }
 
+export async function updateOrgLanding(
+  org_id: any,
+  landing_object: any,
+  access_token: string
+) {
+  const result = await fetch(
+    `${getAPIUrl()}orgs/${org_id}/landing`,
+    RequestBodyWithAuthHeader('PUT', landing_object, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
+export async function uploadLandingContent(
+  org_uuid: any,
+  content_file: File,
+  access_token: string
+) {
+  const formData = new FormData()
+  formData.append('content_file', content_file)
+  
+  const result = await fetch(
+    `${getAPIUrl()}orgs/${org_uuid}/landing/content`,
+    RequestBodyFormWithAuthHeader('POST', formData, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
 export async function removeUserFromOrg(
   org_id: any,
   user_id: any,
@@ -108,6 +138,21 @@ export async function removeUserFromOrg(
 ) {
   const result = await fetch(
     `${getAPIUrl()}orgs/${org_id}/users/${user_id}`,
+    RequestBodyWithAuthHeader('DELETE', null, null, access_token)
+  )
+  const res = await getResponseMetadata(result)
+  return res
+}
+
+export async function removeUsersFromOrg(
+  org_id: any,
+  user_ids: number[],
+  access_token: string
+) {
+  const params = new URLSearchParams()
+  user_ids.forEach((id) => params.append('user_ids', id.toString()))
+  const result = await fetch(
+    `${getAPIUrl()}orgs/${org_id}/users/batch/remove?${params.toString()}`,
     RequestBodyWithAuthHeader('DELETE', null, null, access_token)
   )
   const res = await getResponseMetadata(result)

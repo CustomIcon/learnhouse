@@ -7,6 +7,7 @@ import { Check, Info, Minus, Plus, PlusCircle, X } from 'lucide-react';
 import React, { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { v4 as uuidv4 } from 'uuid';
+import { useTranslation } from 'react-i18next';
 
 type QuizSchema = {
     questionText: string;
@@ -27,6 +28,7 @@ type QuizSubmitSchema = {
         optionUUID: string;
         answer: boolean
     }[];
+    assignment_task_submission_uuid?: string;
 };
 
 type TaskQuizObjectProps = {
@@ -42,6 +44,7 @@ type Submission = {
 };
 
 function TaskQuizObject({ view, assignmentTaskUUID, user_id }: TaskQuizObjectProps) {
+    const { t } = useTranslation()
     const session = useLHSession() as any;
     const access_token = session?.data?.tokens?.access_token;
     const assignmentTaskState = useAssignmentsTask() as any;
@@ -74,8 +77,12 @@ function TaskQuizObject({ view, assignmentTaskUUID, user_id }: TaskQuizObjectPro
 
     const removeOption = (qIndex: number, oIndex: number) => {
         const updatedQuestions = [...questions];
-        updatedQuestions[qIndex].options.splice(oIndex, 1);
-        setQuestions(updatedQuestions);
+        if (updatedQuestions[qIndex].options.length > 1) {
+            updatedQuestions[qIndex].options.splice(oIndex, 1);
+            setQuestions(updatedQuestions);
+        } else {
+            toast.error('Cannot delete the last option. At least one option is required.');
+        }
     };
 
     const addQuestion = () => {
@@ -109,9 +116,9 @@ function TaskQuizObject({ view, assignmentTaskUUID, user_id }: TaskQuizObjectPro
             assignmentTaskStateHook({
                 type: 'reload',
             });
-            toast.success('Task saved successfully');
+            toast.success(t('dashboard.assignments.editor.toasts.task_saved'));
         } else {
-            toast.error('Error saving task, please retry later.');
+            toast.error(t('dashboard.assignments.editor.toasts.task_save_error'));
         }
     };
     /* TEACHER VIEW CODE */
@@ -171,8 +178,14 @@ function TaskQuizObject({ view, assignmentTaskUUID, user_id }: TaskQuizObjectPro
         if (assignmentTaskUUID) {
             const res = await getAssignmentTaskSubmissionsMe(assignmentTaskUUID, assignment.assignment_object.assignment_uuid, access_token);
             if (res.success) {
-                setUserSubmissions(res.data.task_submission);
-                setInitialUserSubmissions(res.data.task_submission);
+                setUserSubmissions({
+                    ...res.data.task_submission,
+                    assignment_task_submission_uuid: res.data.assignment_task_submission_uuid
+                });
+                setInitialUserSubmissions({
+                    ...res.data.task_submission,
+                    assignment_task_submission_uuid: res.data.assignment_task_submission_uuid
+                });
             }
 
         }
@@ -210,6 +223,7 @@ function TaskQuizObject({ view, assignmentTaskUUID, user_id }: TaskQuizObjectPro
 
         // Save the quiz to the server
         const values = {
+            assignment_task_submission_uuid: userSubmissions.assignment_task_submission_uuid || null,
             task_submission: updatedUserSubmissions,
             grade: 0,
             task_submission_grade_feedback: '',
@@ -221,11 +235,17 @@ function TaskQuizObject({ view, assignmentTaskUUID, user_id }: TaskQuizObjectPro
                 assignmentTaskStateHook({
                     type: 'reload',
                 });
-                toast.success('Task saved successfully');
+                toast.success(t('dashboard.assignments.editor.toasts.task_saved'));
                 setShowSavingDisclaimer(false);
-                setUserSubmissions(updatedUserSubmissions);
+                // Update userSubmissions with the returned UUID for future updates
+                const updatedUserSubmissionsWithUUID = {
+                    ...updatedUserSubmissions,
+                    assignment_task_submission_uuid: res.data?.assignment_task_submission_uuid || userSubmissions.assignment_task_submission_uuid
+                };
+                setUserSubmissions(updatedUserSubmissionsWithUUID);
+                setInitialUserSubmissions(updatedUserSubmissionsWithUUID);
             } else {
-                toast.error('Error saving task, please retry later.');
+                toast.error(t('dashboard.assignments.editor.toasts.task_save_error'));
             }
         }
     };
@@ -238,9 +258,15 @@ function TaskQuizObject({ view, assignmentTaskUUID, user_id }: TaskQuizObjectPro
         if (assignmentTaskUUID && user_id) {
             const res = await getAssignmentTaskSubmissionsUser(assignmentTaskUUID, user_id, assignment.assignment_object.assignment_uuid, access_token);
             if (res.success) {
-                setUserSubmissions(res.data.task_submission);
+                setUserSubmissions({
+                    ...res.data.task_submission,
+                    assignment_task_submission_uuid: res.data.assignment_task_submission_uuid
+                });
                 setUserSubmissionObject(res.data);
-                setInitialUserSubmissions(res.data.task_submission);
+                setInitialUserSubmissions({
+                    ...res.data.task_submission,
+                    assignment_task_submission_uuid: res.data.assignment_task_submission_uuid
+                });
             }
 
         }
@@ -267,6 +293,7 @@ function TaskQuizObject({ view, assignmentTaskUUID, user_id }: TaskQuizObjectPro
 
             // Save the grade to the server
             const values = {
+                assignment_task_submission_uuid: userSubmissions.assignment_task_submission_uuid,
                 task_submission: userSubmissions,
                 grade: finalGrade,
                 task_submission_grade_feedback: 'Auto graded by system',
@@ -342,7 +369,7 @@ function TaskQuizObject({ view, assignmentTaskUUID, user_id }: TaskQuizObjectPro
                                     <div className="flex" key={oIndex}>
                                         <div
                                             onClick={() => view === 'student' && chooseOption(qIndex, oIndex)}
-                                            className={"answer outline outline-3 outline-white pr-2 shadow w-full flex items-center space-x-2 h-[30px] hover:bg-opacity-100 hover:shadow-md rounded-lg bg-white text-sm duration-150 cursor-pointer ease-linear nice-shadow " + (view == 'student' ? 'active:scale-110' : '')}
+                                            className={"answer outline outline-3 outline-white pr-2 shadow-sm w-full flex items-center space-x-2 h-[30px] hover:bg-opacity-100 hover:shadow-md rounded-lg bg-white text-sm duration-150 cursor-pointer ease-linear nice-shadow " + (view == 'student' ? 'active:scale-110' : '')}
                                         >
                                             <div className="font-bold text-base flex items-center h-full w-[40px] rounded-l-md text-slate-800 bg-slate-100/80">
                                                 <p className="mx-auto font-bold text-sm">{String.fromCharCode(65 + oIndex)}</p>
@@ -455,7 +482,7 @@ function TaskQuizObject({ view, assignmentTaskUUID, user_id }: TaskQuizObjectPro
                                         {view === 'teacher' && oIndex === question.options.length - 1 && questions[qIndex].options.length <= 4 && (
                                             <div className="flex justify-center mx-auto px-2">
                                                 <div
-                                                    className="outline text-xs outline-3 outline-white px-2 shadow w-full flex items-center h-[30px] hover:bg-opacity-100 hover:shadow-md rounded-lg bg-white duration-150 cursor-pointer ease-linear nice-shadow"
+                                                    className="outline text-xs outline-3 outline-white px-2 shadow-sm w-full flex items-center h-[30px] hover:bg-opacity-100 hover:shadow-md rounded-lg bg-white duration-150 cursor-pointer ease-linear nice-shadow"
                                                     onClick={() => addOption(qIndex)}
                                                 >
                                                     <Plus size={14} className="inline-block" />
@@ -472,7 +499,7 @@ function TaskQuizObject({ view, assignmentTaskUUID, user_id }: TaskQuizObjectPro
                 {view === 'teacher' && questions.length <= 5 && (
                     <div className="flex justify-center mx-auto px-2">
                         <div
-                            className="flex w-full my-2 py-2 px-4 bg-white text-slate text-xs rounded-md nice-shadow hover:shadow-sm cursor-pointer space-x-3 items-center transition duration-150 ease-linear"
+                            className="flex w-full my-2 py-2 px-4 bg-white text-slate text-xs rounded-md nice-shadow hover:shadow-xs cursor-pointer space-x-3 items-center transition duration-150 ease-linear"
                             onClick={addQuestion}
                         >
                             <PlusCircle size={14} className="inline-block" />

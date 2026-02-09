@@ -1,7 +1,30 @@
+import { useMemo } from 'react'
 import { useEditor, EditorContent } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import styled from 'styled-components'
 import Youtube from '@tiptap/extension-youtube'
+
+/**
+ * Transforms ProseMirror JSON content to fix mark type names.
+ * TipTap uses 'bold'/'italic' but AI sometimes generates 'strong'/'em'.
+ */
+function normalizeMarkTypes(content: any): any {
+  if (!content || typeof content !== 'object') return content;
+  if (Array.isArray(content)) return content.map(normalizeMarkTypes);
+
+  const normalized: any = { ...content };
+  if (normalized.marks && Array.isArray(normalized.marks)) {
+    normalized.marks = normalized.marks.map((mark: any) => {
+      if (mark.type === 'strong') return { ...mark, type: 'bold' };
+      if (mark.type === 'em') return { ...mark, type: 'italic' };
+      return mark;
+    });
+  }
+  if (normalized.content && Array.isArray(normalized.content)) {
+    normalized.content = normalizeMarkTypes(normalized.content);
+  }
+  return normalized;
+}
 // Custom Extensions
 import InfoCallout from '@components/Objects/Editor/Extensions/Callout/Info/InfoCallout'
 import WarningCallout from '@components/Objects/Editor/Extensions/Callout/Warning/WarningCallout'
@@ -10,6 +33,7 @@ import VideoBlock from '@components/Objects/Editor/Extensions/Video/VideoBlock'
 import MathEquationBlock from '@components/Objects/Editor/Extensions/MathEquation/MathEquationBlock'
 import PDFBlock from '@components/Objects/Editor/Extensions/PDF/PDFBlock'
 import QuizBlock from '@components/Objects/Editor/Extensions/Quiz/QuizBlock'
+import MagicBlock from '@components/Objects/Editor/Extensions/MagicBlocks/MagicBlock'
 
 // Lowlight
 import { common, createLowlight } from 'lowlight'
@@ -23,15 +47,28 @@ import python from 'highlight.js/lib/languages/python'
 import java from 'highlight.js/lib/languages/java'
 import { NoTextInput } from '@components/Objects/Editor/Extensions/NoTextInput/NoTextInput'
 import EditorOptionsProvider from '@components/Contexts/Editor/EditorContext'
-import AICanvaToolkit from './AI/AICanvaToolkit'
 import EmbedObjects from '@components/Objects/Editor/Extensions/EmbedObjects/EmbedObjects'
 import Badges from '@components/Objects/Editor/Extensions/Badges/Badges'
 import Buttons from '@components/Objects/Editor/Extensions/Buttons/Buttons'
+import Flipcard from '@components/Objects/Editor/Extensions/Flipcard/Flipcard'
+import Scenarios from '@components/Objects/Editor/Extensions/Scenarios/Scenarios'
+import { Table } from '@tiptap/extension-table'
+import TableHeader from '@tiptap/extension-table-header'
+import TableRow from '@tiptap/extension-table-row'
+import TableCell from '@tiptap/extension-table-cell'
+import UserBlock from '@components/Objects/Editor/Extensions/Users/UserBlock'
+import { getLinkExtension } from '@components/Objects/Editor/EditorConf'
+import TableOfContents from './TableOfContents'
+import { CustomHeading } from './CustomHeadingExtenstion'
+import WebPreview from '@components/Objects/Editor/Extensions/WebPreview/WebPreview'
+import AICanvaToolkit from './AI/AICanvaToolkit'
 
 interface Editor {
   content: string
   activity: any
 }
+
+
 
 function Canva(props: Editor) {
   /**
@@ -40,6 +77,19 @@ function Canva(props: Editor) {
    * To let the various Custom Extensions know that the editor is not editable, React context (EditorOptionsProvider) will be used instead of props.extension.options.editable.
    */
   const isEditable = true
+
+  // Normalize content to fix AI-generated mark types (strong -> bold, em -> italic)
+  const normalizedContent = useMemo(() => {
+    if (!props.content) return props.content;
+    try {
+      const parsed = typeof props.content === 'string'
+        ? JSON.parse(props.content)
+        : props.content;
+      return normalizeMarkTypes(parsed);
+    } catch (e) {
+      return props.content;
+    }
+  }, [props.content]);
 
   // Code Block Languages for Lowlight
   lowlight.register('html', html)
@@ -50,9 +100,27 @@ function Canva(props: Editor) {
   lowlight.register('java', java)
 
   const editor: any = useEditor({
+    immediatelyRender: false,
     editable: isEditable,
     extensions: [
-      StarterKit,
+      StarterKit.configure({
+        heading: false,
+        // Disable codeBlock since we use CodeBlockLowlight instead
+        codeBlock: false,
+        // Disable link since we use custom getLinkExtension() instead
+        link: false,
+        bulletList: {
+          HTMLAttributes: {
+            class: 'bullet-list',
+          },
+        },
+        orderedList: {
+          HTMLAttributes: {
+            class: 'ordered-list',
+          },
+        },
+      }),
+      CustomHeading,
       NoTextInput,
       // Custom Extensions
       InfoCallout.configure({
@@ -100,16 +168,46 @@ function Canva(props: Editor) {
         editable: isEditable,
         activity: props.activity,
       }),
+      UserBlock.configure({
+        editable: isEditable,
+        activity: props.activity,
+      }),
+      Table.configure({
+        resizable: true,
+      }),
+      getLinkExtension(),
+      WebPreview.configure({
+        editable: true,
+        activity: props.activity,
+      }),
+      Flipcard.configure({
+        editable: false,
+        activity: props.activity,
+      }),
+      Scenarios.configure({
+        editable: false,
+        activity: props.activity,
+      }),
+      MagicBlock.configure({
+        editable: false,
+        activity: props.activity,
+      }),
+      TableRow,
+      TableHeader,
+      TableCell,
     ],
 
-    content: props.content,
+    content: normalizedContent,
   })
 
   return (
     <EditorOptionsProvider options={{ isEditable: false }}>
       <CanvaWrapper>
         <AICanvaToolkit activity={props.activity} editor={editor} />
-        <EditorContent editor={editor} />
+        <ContentWrapper>
+          <TableOfContents editor={editor} />
+          <EditorContent editor={editor} />
+        </ContentWrapper>
       </CanvaWrapper>
     </EditorOptionsProvider>
   )
@@ -118,72 +216,150 @@ function Canva(props: Editor) {
 const CanvaWrapper = styled.div`
   width: 100%;
   margin: 0 auto;
+`
 
-  .bubble-menu {
-    display: flex;
-    background-color: #0d0d0d;
-    padding: 0.2rem;
-    border-radius: 0.5rem;
+const ContentWrapper = styled.div`
+  display: flex;
+  width: 100%;
+  height: 100%;
 
-    button {
-      border: none;
-      background: none;
-      color: #fff;
-      font-size: 0.85rem;
-      font-weight: 500;
-      padding: 0 0.2rem;
-      opacity: 0.6;
+  > div:first-child {
+    width: 20%;
+    padding-right: 1rem;
+  }
 
-      &:hover,
-      &.is-active {
-        opacity: 1;
-      }
+  > div:last-child {
+    width: 80%;
+  }
+
+  // Only apply flex layout when there are multiple children (table of contents present)
+  &:has(> div:first-child:not(:last-child)) {
+    > div:first-child {
+      width: 20%;
+      padding-right: 1rem;
+    }
+
+    > div:last-child {
+      width: 80%;
     }
   }
 
-  // disable chrome outline
+  // When there's only one child (no table of contents), make it full width
+  &:has(> div:first-child:last-child) {
+    > div:first-child {
+      width: 100%;
+      padding-right: 0;
+    }
+  }
 
   .ProseMirror {
-    // Workaround to disable editor from being edited by the user.
+    flex: 1;
+    padding: 1rem;
+    // disable chrome outline
     caret-color: transparent;
 
     h1 {
-      font-size: 30px;
+      font-size: 32px;
       font-weight: 600;
-      margin-bottom: 10px;
+      margin-bottom: 24px;
     }
 
     h2 {
-      font-size: 25px;
+      font-size: 28px;
       font-weight: 600;
-      margin-bottom: 10px;
+      margin-bottom: 24px;
     }
 
     h3 {
-      font-size: 20px;
+      font-size: 24px;
       font-weight: 600;
-      margin-bottom: 10px;
+      margin-bottom: 24px;
     }
 
     h4 {
-      font-size: 18px;
+      font-size: 20px;
       font-weight: 600;
-      margin-top: 10px;
-      margin-bottom: 10px;
+      margin-bottom: 24px;
     }
 
     h5 {
-      font-size: 16px;
+      font-size: 18px;
       font-weight: 600;
-      margin-top: 10px;
-      margin-bottom: 10px;
+      margin-bottom: 24px;
+    }
+
+    // Link styling
+    a {
+      color: #2563eb;
+      text-decoration: underline;
+      cursor: pointer;
+      transition: color 0.2s ease;
+
+      &:hover {
+        color: #1d4ed8;
+        text-decoration: none;
+      }
     }
 
     ul,
     ol {
       padding: 0 1rem;
       padding-left: 20px;
+    }
+
+    ul {
+      list-style-type: disc;
+    }
+
+    ol {
       list-style-type: decimal;
+    }
+
+    table {
+    border-collapse: collapse;
+    margin: 0;
+    overflow: hidden;
+    table-layout: fixed;
+    width: 100%;
+
+    td,
+    th {
+      border: 1px solid rgba(139, 139, 139, 0.4);
+      box-sizing: border-box;
+      min-width: 1em;
+      padding: 6px 8px;
+      position: relative;
+      vertical-align: top;
+
+      > * {
+        margin-bottom: 0;
+      }
+    }
+
+    th {
+      background-color: rgba(217, 217, 217, 0.4);
+      font-weight: bold;
+      text-align: left;
+    }
+
+    .selectedCell:after {
+      background: rgba(139, 139, 139, 0.2);
+      content: "";
+      left: 0; right: 0; top: 0; bottom: 0;
+      pointer-events: none;
+      position: absolute;
+      z-index: 2;
+    }
+
+    .column-resize-handle {
+      background-color: #8d78eb;
+      bottom: -2px;
+      pointer-events: none;
+      position: absolute;
+      right: -2px;
+      top: 0;
+      width: 4px;
+      }
     }
 
     &:focus {
